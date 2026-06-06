@@ -83,6 +83,13 @@ class Config:
     TP2_RR: float = 2.5                   # TP2 à 2.5R (objectif principal)
     TP3_RR: float = 3.0                   # TP3 optionnel si structure favorable
 
+    # ── Circuit Breaker — seuils à double condition ───────────────────────
+    CB_WARNING_DD_PCT: float = 1.5          # DD → niveau WARNING
+    CB_STOP_DD_PCT: float = 2.0             # DD + 3 pertes → niveau STOPPED
+    CB_PAUSE_DURATION_HEURES: int = 4       # Durée de la pause niveau 2
+    CB_WARNING_RISK_MULTIPLIER: float = 0.5 # Risk réduit à 50% en WARNING
+    # MAX_DRAWDOWN_JOURNALIER_PCT = 3.0 (déjà défini plus bas) → DD hard limit
+
     # ── Displacement — critères de validation institutionnelle ────────────
     DISPLACEMENT_MIN_BODY_ATR_RATIO: float = 1.5    # Corps ≥ 1.5× ATR(14)
     DISPLACEMENT_MIN_BODY_RANGE_PCT: float = 60.0   # Corps ≥ 60% du range total

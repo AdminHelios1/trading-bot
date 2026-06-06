@@ -48,16 +48,20 @@ class StrategieSMC:
         self,
         filtre_news: Optional[FiltreNews] = None,
         filtre_spread: Optional[FiltreSpread] = None,
+        circuit_breaker=None,
     ) -> None:
         """
         Args:
             filtre_news: Instance FiltreNews injectée (optionnel).
             filtre_spread: Instance FiltreSpread injectée (optionnel).
+            circuit_breaker: Instance CircuitBreaker injectée (optionnel).
         """
         self.analyseur_structure = AnalyseurStructure()
         self.detecteur_ob = DetecteurOB()
         self.filtre_news = filtre_news or FiltreNews(fetcher=RecuperateurCalendrier())
         self.filtre_spread = filtre_spread
+        self.circuit_breaker = circuit_breaker
+        self._dernier_multiplicateur_risk: float = 1.0  # Transmis au risk_manager
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -82,6 +86,20 @@ class StrategieSMC:
         Returns:
             SignalTrading avec direction et métadonnées.
         """
+        # ── Filtre 0 : Circuit Breaker (le moins coûteux — premier filtre) ──
+        if self.circuit_breaker is not None:
+            cb_autorise, cb_raison, cb_multiplicateur = (
+                self.circuit_breaker.trading_autorise()
+            )
+            self._dernier_multiplicateur_risk = cb_multiplicateur
+            if not cb_autorise:
+                return SignalTrading(
+                    direction=DirectionSignal.AUCUN,
+                    valide=False,
+                    zone_reference=None,
+                    raison_rejet=cb_raison,
+                )
+
         # ── Filtres globaux (vérifiés avant tout calcul coûteux) ──────────
         if not est_en_session:
             return SignalTrading(
@@ -92,6 +110,7 @@ class StrategieSMC:
             )
 
         # ── Ordre d'évaluation des filtres (du moins coûteux au plus coûteux) ──
+        # 0. Circuit Breaker (déjà vérifié ci-dessus)
         # 1. Session (déjà vérifié ci-dessus)
         # 2. News (lookup dict)
         # 3. Spread / hard cap (lecture symbol_info)

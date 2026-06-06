@@ -33,6 +33,8 @@ from news_fetcher import RecuperateurCalendrier
 from news_scheduler import demarrer_scheduler_news, arreter_scheduler_news
 from spread_monitor import MoniteurSpread
 from spread_filter import FiltreSpread
+from circuit_breaker import CircuitBreaker, NiveauCB
+from daily_stats_tracker import SuiveurStatsJournalieres, ResultatTrade
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -163,8 +165,26 @@ def boucle_principale(mode: str) -> None:
     filtre_spread = FiltreSpread(moniteur=moniteur_spread, connecteur=connecteur)
     logger.info("Filtre spread initialisé")
 
+    # ── Initialisation du circuit breaker ─────────────────────────────────
+    suiveur_stats = SuiveurStatsJournalieres(connecteur=connecteur)
+    circuit_breaker = CircuitBreaker(
+        suiveur_stats=suiveur_stats,
+        connecteur=connecteur,
+        notifier=notifier,
+    )
+    status_cb = circuit_breaker.get_status()
+    logger.info(
+        f"Circuit Breaker initialisé | Niveau: {status_cb['niveau']} | "
+        f"Pertes: {status_cb.get('pertes_consecutives', 0)} | "
+        f"DD: {status_cb.get('drawdown_pct', 0):.2f}%"
+    )
+
     # Injecter le filtre dans la stratégie
-    strategie = StrategieSMC(filtre_news=filtre_news, filtre_spread=filtre_spread)
+    strategie = StrategieSMC(
+        filtre_news=filtre_news,
+        filtre_spread=filtre_spread,
+        circuit_breaker=circuit_breaker,
+    )
 
     # Initialiser la session
     info_compte = connecteur.get_info_compte()
@@ -259,19 +279,36 @@ def boucle_principale(mode: str) -> None:
             # ── 7. Gérer les positions ouvertes ───────────────────────────
             tickets_fermes = gestionnaire_positions.gerer_positions(df_m15)
 
-            # Enregistrer les résultats des positions fermées
+            # Enregistrer les résultats des positions fermées + évaluer CB
             for ticket in tickets_fermes:
                 positions_fermees = connecteur.get_historique_positions(
                     int(maintenant.timestamp()) - 3600
                 )
                 for pos_fermee in positions_fermees:
                     if pos_fermee["ticket"] == ticket:
-                        gestionnaire_risque.enregistrer_resultat_trade(pos_fermee["profit"])
+                        profit = pos_fermee["profit"]
+                        gestionnaire_risque.enregistrer_resultat_trade(profit)
                         notifier.alerte_trade_ferme(
                             "?", CONFIG.SYMBOLE,
-                            pos_fermee["profit"],
-                            pos_fermee["profit"] / max(abs(pos_fermee["profit"]), 1),
+                            profit,
+                            profit / max(abs(profit), 1),
                         )
+                        # Évaluer le circuit breaker après chaque trade
+                        info_actu = connecteur.get_info_compte()
+                        balance = info_actu["balance"] if info_actu else 10000.0
+                        resultat_cb = ResultatTrade(
+                            id_trade=str(ticket),
+                            heure_fermeture=maintenant.isoformat(),
+                            direction="?",
+                            r_realise=1.0 if profit > 0 else -1.0,
+                            pnl_usd=profit,
+                            pnl_pct=profit / max(balance, 1) * 100,
+                            est_gagnant=profit > 0,
+                            raison_fermeture="fermeture",
+                            ob_score=0,
+                            condition_marche="inconnu",
+                        )
+                        circuit_breaker.evaluer_apres_trade(resultat_cb)
 
             # Vérifier invalidations
             for ticket, etat_pos in list(gestionnaire_positions.positions.items()):

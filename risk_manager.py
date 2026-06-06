@@ -64,6 +64,7 @@ class GestionnaireRisque:
         risque_pct: float,
         sl_points: float,
         symbole: str,
+        multiplicateur_risk: float = 1.0,
     ) -> float:
         """
         Calcule le lot size basé sur le capital, le risque % et la distance du SL.
@@ -75,10 +76,19 @@ class GestionnaireRisque:
             risque_pct: Pourcentage du capital à risquer (ex: 1.0).
             sl_points: Distance du stop loss en points (unités MT5).
             symbole: Symbole MT5 (ex: "XAUUSD").
+            multiplicateur_risk: Multiplier CB (1.0 normal, 0.5 en WARNING CB).
 
         Returns:
             Lot size arrondi aux contraintes du broker.
         """
+        # Appliquer le multiplicateur du circuit breaker
+        risque_pct_effectif = risque_pct * multiplicateur_risk
+        if multiplicateur_risk < 1.0:
+            logger.info(
+                f"Risk réduit par CB : {risque_pct}% × {multiplicateur_risk} "
+                f"= {risque_pct_effectif:.2f}%"
+            )
+        risque_pct = risque_pct_effectif
         if sl_points <= 0:
             logger.error("Calcul lot size impossible : sl_points <= 0")
             return 0.0

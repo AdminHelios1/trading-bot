@@ -58,6 +58,18 @@ class Dashboard:
             "circuit_breaker": False,
             "bot_arrete": False,
             "derniere_mise_a_jour": "",
+            # Circuit Breaker
+            "cb_niveau": "AUCUN",
+            "cb_raison": "",
+            "cb_pertes_consecutives": 0,
+            "cb_dd_pct": 0.0,
+            "cb_trades_bloques": 0,
+            "cb_risk_pct": 1.0,
+            "cb_pause_jusqu_a": None,
+            "cb_nb_trades": 0,
+            "cb_win_rate": 0.0,
+            "cb_pnl_usd": 0.0,
+            "cb_pnl_pct": 0.0,
             # Order Blocks multi-TF
             "obs_actifs": [],   # Liste de dicts résumés des OB
             # Filtre spread
@@ -497,6 +509,96 @@ class Dashboard:
 
         return Panel(table, title="📉 STATISTIQUES", border_style="magenta")
 
+    def _construire_panel_circuit_breaker(self) -> Panel:
+        """Panneau Circuit Breaker et stats journalières."""
+        e = self._etat
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=22)
+        table.add_column("Valeur", width=32)
+
+        # Statut CB
+        niveau = e.get("cb_niveau", "AUCUN")
+        if niveau == "AUCUN":
+            statut = Text("✅ INACTIF", style="bold green")
+            couleur_bord = "green"
+        elif niveau == "WARNING":
+            statut = Text(f"⚠️  WARNING — risk réduit à 0.5%", style="bold yellow")
+            couleur_bord = "yellow"
+        elif niveau == "PAUSE":
+            pause = e.get("cb_pause_jusqu_a")
+            if pause:
+                from datetime import datetime
+                try:
+                    restant = (pause - datetime.utcnow()).total_seconds()
+                    h, m = int(restant // 3600), int((restant % 3600) // 60)
+                    statut = Text(f"🔴 PAUSE — {h}h{m:02d}min restantes", style="bold red")
+                except Exception:
+                    statut = Text("🔴 PAUSE active", style="bold red")
+            else:
+                statut = Text("🔴 PAUSE active", style="bold red")
+            couleur_bord = "red"
+        else:  # ARRETE
+            statut = Text("⛔ ARRÊT JOURNALIER — reset à minuit UTC", style="bold red blink")
+            couleur_bord = "red"
+
+        table.add_row("Statut CB", statut)
+
+        raison = e.get("cb_raison", "")
+        if raison:
+            table.add_row("Raison", Text(raison, style="dim"))
+
+        # Métriques
+        pertes = e.get("cb_pertes_consecutives", 0)
+        dd = e.get("cb_dd_pct", 0.0)
+        table.add_row(
+            "Pertes consécutives",
+            Text(
+                f"{pertes}  (seuil WARNING: 2)",
+                style="yellow" if pertes >= 2 else "dim"
+            )
+        )
+        table.add_row(
+            "DD journalier",
+            Text(
+                f"{dd:.2f}%  (seuil WARNING: 1.5%)",
+                style="yellow" if dd >= 1.5 else "dim"
+            )
+        )
+
+        # P&L jour
+        pnl = e.get("cb_pnl_usd", 0.0)
+        pnl_pct = e.get("cb_pnl_pct", 0.0)
+        signe = "+" if pnl >= 0 else ""
+        couleur_pnl = "green" if pnl >= 0 else "red"
+        table.add_row(
+            "P&L jour",
+            Text(f"{signe}${pnl:.2f}  ({signe}{pnl_pct:.2f}%)", style=couleur_pnl)
+        )
+
+        # Stats trades
+        nb = e.get("cb_nb_trades", 0)
+        wr = e.get("cb_win_rate", 0.0)
+        bloques = e.get("cb_trades_bloques", 0)
+        table.add_row("Trades aujourd'hui", f"{nb} (WR: {wr:.0f}%)")
+        if bloques > 0:
+            table.add_row("Trades bloqués", Text(f"{bloques}", style="yellow"))
+
+        # Risk actuel
+        risk = e.get("cb_risk_pct", CONFIG.RISQUE_PAR_TRADE_PCT)
+        table.add_row(
+            "Risk actuel",
+            Text(
+                f"{risk:.1f}%  {'⚠️ réduit' if risk < CONFIG.RISQUE_PAR_TRADE_PCT else '(normal)'}",
+                style="yellow" if risk < CONFIG.RISQUE_PAR_TRADE_PCT else "dim"
+            )
+        )
+
+        return Panel(
+            table,
+            title="🔌 CIRCUIT BREAKER & STATS JOUR",
+            border_style=couleur_bord
+        )
+
     def _construire_layout(self) -> Panel:
         """Assemble tous les panneaux en un layout complet."""
         e = self._etat
@@ -529,7 +631,7 @@ class Dashboard:
         )
         layout.add_row(
             self._construire_panel_ob(),
-            Text(""),
+            self._construire_panel_circuit_breaker(),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))
