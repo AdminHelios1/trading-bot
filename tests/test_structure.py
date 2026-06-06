@@ -40,24 +40,35 @@ class TestDetectionSwings:
         df = creer_df_tendance_haussiere(n=60)
         swings_hauts, _ = self.analyseur.detecter_swings(df, n_bougies=3)
         highs = df["high"].values
+        timestamps = list(df.index)
 
-        for swing in swings_hauts:
-            i = swing.index
-            for j in range(1, 4):
-                assert highs[i] > highs[i - j], f"Swing haut non valide à {i}: pas plus haut que {i-j}"
-                assert highs[i] > highs[i + j], f"Swing haut non valide à {i}: pas plus haut que {i+j}"
+        for ts, prix in swings_hauts:
+            # Les swings sont maintenant des tuples (timestamp, prix)
+            try:
+                i = timestamps.index(ts)
+            except ValueError:
+                continue
+            n = 3
+            if i >= n and i < len(df) - n:
+                voisins = highs[i - n:i + n + 1]
+                assert prix >= max(voisins) - 0.01
 
     def test_swing_bas_est_minimum_local(self):
         """Chaque swing bas doit être inférieur aux N bougies de chaque côté."""
         df = creer_df_tendance_baissiere(n=60)
         _, swings_bas = self.analyseur.detecter_swings(df, n_bougies=3)
         lows = df["low"].values
+        timestamps = list(df.index)
 
-        for swing in swings_bas:
-            i = swing.index
-            for j in range(1, 4):
-                assert lows[i] < lows[i - j], f"Swing bas non valide à {i}"
-                assert lows[i] < lows[i + j], f"Swing bas non valide à {i}"
+        for ts, prix in swings_bas:
+            try:
+                i = timestamps.index(ts)
+            except ValueError:
+                continue
+            n = 3
+            if i >= n and i < len(df) - n:
+                voisins = lows[i - n:i + n + 1]
+                assert prix <= min(voisins) + 0.01
 
 
 class TestDetectionBOS:

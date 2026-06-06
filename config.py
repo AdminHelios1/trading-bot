@@ -83,6 +83,21 @@ class Config:
     TP2_RR: float = 2.5                   # TP2 à 2.5R (objectif principal)
     TP3_RR: float = 3.0                   # TP3 optionnel si structure favorable
 
+    # ── Displacement — critères de validation institutionnelle ────────────
+    DISPLACEMENT_MIN_BODY_ATR_RATIO: float = 1.5    # Corps ≥ 1.5× ATR(14)
+    DISPLACEMENT_MIN_BODY_RANGE_PCT: float = 60.0   # Corps ≥ 60% du range total
+    DISPLACEMENT_CLOSE_THRESHOLD_BULLISH: float = 66.0  # Clôture ≥ 66% (tiers sup.)
+    DISPLACEMENT_CLOSE_THRESHOLD_BEARISH: float = 34.0  # Clôture ≤ 34% (tiers inf.)
+    DISPLACEMENT_MAX_REJECTION_WICK_PCT: float = 20.0   # Mèche rejet ≤ 20% du range
+
+    # ── Structure de marché ───────────────────────────────────────────────
+    SWING_DETECTION_LOOKBACK: int = 3       # Bougies de chaque côté pour un swing
+    SWING_MIN_SIZE_ATR_RATIO: float = 0.8   # Swing ≥ 0.8× ATR pour être significatif
+    BOS_LOOKBACK_CANDLES: int = 50          # Fenêtre de recherche des BOS récents
+    CHOCH_MAX_AGE_CANDLES: int = 20         # CHoCH ignoré si > 20 bougies
+    TREND_MIN_STRONG_BOS: int = 1           # Min BOS_STRONG pour déclarer une tendance
+    TREND_MAX_AGE_CANDLES: int = 30         # Tendance trop ancienne si > 30 bougies
+
     # ── Spread XAUUSD ─────────────────────────────────────────────────────
     SPREAD_HARD_CAP_POINTS: float = 35.0       # Jamais trader au-dessus (absolu)
     SPREAD_DYNAMIC_MULTIPLIER: float = 2.5     # Bloquer si spread > 2.5× la moyenne

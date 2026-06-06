@@ -11,7 +11,7 @@ import pandas as pd
 from loguru import logger
 
 from config import CONFIG
-from structure_analyzer import AnalyseurStructure, AnalyseStructure, Tendance, TypeBOS
+from structure_analyzer import AnalyseurStructure, StructureMarche as AnalyseStructure, Tendance, TypeBOS
 from ob_detector import DetecteurOB, OBMultiTimeframe, TypeOB, StatutOB
 from ob_visualizer import logger_resume_ob
 from indicators import Indicateurs
@@ -133,8 +133,30 @@ class StrategieSMC:
                 raison_rejet="Volatilité H4 insuffisante (marché plat)",
             )
 
-        # ── Analyse de structure H4 ───────────────────────────────────────
+        # ── Analyse de structure H4 avec validation Displacement ─────────
         analyse = self.analyseur_structure.analyser(df_h4)
+
+        # Règle : tendance RANGE ou NEUTRE → pas de trade
+        from structure_analyzer import Tendance as TendanceEnum
+        if analyse.tendance in (TendanceEnum.RANGE, TendanceEnum.NEUTRE):
+            return SignalTrading(
+                direction=DirectionSignal.AUCUN,
+                valide=False,
+                zone_reference=None,
+                raison_rejet=f"Marché en {analyse.tendance.value} — aucun BOS_FORT récent",
+            )
+
+        # Règle : tendance trop ancienne
+        if analyse.age_tendance_bougies > CONFIG.TREND_MAX_AGE_CANDLES:
+            return SignalTrading(
+                direction=DirectionSignal.AUCUN,
+                valide=False,
+                zone_reference=None,
+                raison_rejet=(
+                    f"Tendance {analyse.tendance.value} trop ancienne "
+                    f"({analyse.age_tendance_bougies} bougies H4) — attendre confirmation"
+                ),
+            )
 
         # ── Détection des OB multi-TF (H4 + H1 + M15) ────────────────────
         # H4 est obligatoire — sans H4 l'OB est rejeté

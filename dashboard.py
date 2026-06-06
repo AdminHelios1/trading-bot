@@ -38,7 +38,13 @@ class Dashboard:
             "drawdown_journalier_pct": 0.0,
             "drawdown_total_pct": 0.0,
             "tendance_h4": "INCONNU",
+            "age_tendance_bougies": 0,
             "dernier_bos": "",
+            "dernier_bos_force": "",
+            "displacement_detail": "",
+            "dernier_choch_str": "—",
+            "choch_confirme": False,
+            "bos_faibles_ignores": 0,
             "zone_ob_active": "",
             "signal_actuel": "EN ATTENTE",
             "positions": [],
@@ -157,26 +163,76 @@ class Dashboard:
         return Panel(table, title="💰 COMPTE", border_style="blue")
 
     def _construire_panel_marche(self) -> Panel:
-        """Panneau affichant la structure de marché et les zones actives."""
+        """Panneau structure de marché H4 avec Displacement."""
         e = self._etat
         table = Table(box=None, show_header=False, padding=(0, 1))
         table.add_column("Clé", style="dim", width=20)
-        table.add_column("Valeur", width=30)
+        table.add_column("Valeur", width=32)
 
-        couleur_tendance = "green" if "BULL" in e["tendance_h4"] else "red"
-        table.add_row("Trend H4", Text(e["tendance_h4"], style=f"bold {couleur_tendance}"))
-        table.add_row("Dernier BOS/CHoCH", e["dernier_bos"] or "—")
-        table.add_row("Zone OB active", e["zone_ob_active"] or "Aucune")
+        # Tendance
+        tendance = e["tendance_h4"]
+        if "BULL" in tendance:
+            couleur_tendance = "bold green"
+            emoji_tendance = "📈"
+        elif "BEAR" in tendance:
+            couleur_tendance = "bold red"
+            emoji_tendance = "📉"
+        elif "RANGE" in tendance:
+            couleur_tendance = "dim"
+            emoji_tendance = "⏸️ "
+        else:
+            couleur_tendance = "yellow"
+            emoji_tendance = "❓"
 
-        # Signal
+        age_str = f" (depuis {e.get('age_tendance_bougies', '?')} bougies H4)" if e.get("age_tendance_bougies") else ""
+        table.add_row(
+            "Tendance",
+            Text(f"{emoji_tendance} {tendance}{age_str}", style=couleur_tendance)
+        )
+
+        # Dernier BOS
+        bos_str = e.get("dernier_bos") or "—"
+        bos_force = e.get("dernier_bos_force", "")
+        if "FORT" in bos_force:
+            table.add_row("Dernier BOS", Text(f"✅ {bos_str}", style="green"))
+        elif bos_str != "—":
+            table.add_row("Dernier BOS", Text(f"⚠️  {bos_str}", style="yellow"))
+        else:
+            table.add_row("Dernier BOS", Text("—", style="dim"))
+
+        # Détails Displacement
+        disp_str = e.get("displacement_detail", "")
+        if disp_str:
+            table.add_row("Displacement", Text(disp_str, style="dim"))
+
+        # CHoCH
+        choch_str = e.get("dernier_choch_str", "—")
+        choch_confirme = e.get("choch_confirme", False)
+        if choch_confirme:
+            table.add_row("CHoCH", Text(f"✅ {choch_str}", style="green"))
+        elif choch_str != "—":
+            table.add_row("CHoCH", Text(f"⚠️  TENTATIVE — {choch_str}", style="yellow"))
+        else:
+            table.add_row("CHoCH", Text("—", style="dim"))
+
+        # BOS faibles ignorés
+        nb_faibles = e.get("bos_faibles_ignores", 0)
+        if nb_faibles > 0:
+            table.add_row(
+                "BOS faibles",
+                Text(f"⚠️  {nb_faibles} ignorés (sans Displacement)", style="dim yellow")
+            )
+
+        # Signal actuel
         couleur_signal = "yellow"
-        if "LONG" in e["signal_actuel"]:
+        signal_str = e["signal_actuel"]
+        if "LONG" in signal_str:
             couleur_signal = "bold green"
-        elif "SHORT" in e["signal_actuel"]:
+        elif "SHORT" in signal_str:
             couleur_signal = "bold red"
-        table.add_row("Signal actuel", Text(e["signal_actuel"], style=couleur_signal))
+        table.add_row("Signal", Text(signal_str, style=couleur_signal))
 
-        return Panel(table, title="📊 MARCHÉ", border_style="cyan")
+        return Panel(table, title="📊 STRUCTURE H4", border_style="cyan")
 
     def _construire_panel_positions(self) -> Panel:
         """Panneau affichant les positions ouvertes."""
