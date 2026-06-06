@@ -23,6 +23,23 @@ class ConnecteurMT5:
         self.password: str = os.getenv("MT5_PASSWORD", "")
         self.server: str = os.getenv("MT5_SERVER", "")
         self.connecte: bool = False
+        self.simulateur_slippage = None   # Injecté par activer_mode_paper()
+        self.mode: str = "live"           # "live", "paper" ou "backtest"
+
+    def activer_mode_paper(self, simulateur) -> None:
+        """
+        Active le mode paper trading avec simulation du slippage.
+        Tous les appels à placer_ordre() seront redirigés vers le simulateur.
+
+        Args:
+            simulateur: Instance de SimulateurSlippage.
+        """
+        self.simulateur_slippage = simulateur
+        self.mode = "paper"
+        logger.info(
+            "ConnecteurMT5 → MODE PAPER TRADING | "
+            "Slippage et latence simulés — aucun ordre envoyé à MT5"
+        )
 
     # ── Connexion ──────────────────────────────────────────────────────────
 
@@ -274,6 +291,45 @@ class ConnecteurMT5:
         Returns:
             Dict du résultat MT5, ou None en cas d'échec.
         """
+        # ── Mode paper : rediriger vers le simulateur de slippage ────────────
+        if self.mode == "paper" and self.simulateur_slippage is not None:
+            type_str = "BUY" if type_ordre == mt5.ORDER_TYPE_BUY else "SELL"
+            execution = self.simulateur_slippage.simulate_order(
+                order_type=type_str,
+                requested_price=prix,
+                lots=volume,
+                sl=sl,
+                tp=tp,
+                symbol=symbole,
+                comment=commentaire,
+            )
+
+            if execution.executed_lots == 0:
+                logger.warning(
+                    f"[PAPER] Ordre refusé (requote rejeté) | "
+                    f"Prix demandé: {prix:.2f}"
+                )
+                return None
+
+            # Ticket simulé (≥ 100001, jamais en conflit avec MT5)
+            ticket_simule = self.simulateur_slippage.carnet._prochain_ticket - 1
+            direction = "LONG" if type_str == "BUY" else "SHORT"
+            logger.success(
+                f"[PAPER] Ordre simulé | {direction} {execution.executed_lots} lots "
+                f"{symbole} @ {execution.executed_price:.2f} | "
+                f"SL:{sl:.2f} TP:{tp:.2f} | "
+                f"Ticket simulé: #{ticket_simule}"
+            )
+            return {
+                "order": ticket_simule,
+                "volume": execution.executed_lots,
+                "price": execution.executed_price,
+                "comment": f"PAPER_{execution.order_id}",
+                "retcode": mt5.TRADE_RETCODE_DONE,
+                "slippage_simule_pts": execution.slippage_pts,
+            }
+
+        # ── Mode live : appel MT5 normal ──────────────────────────────────
         requete = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbole,

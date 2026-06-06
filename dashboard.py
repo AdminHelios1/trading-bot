@@ -101,6 +101,19 @@ class Dashboard:
             "news_prochaine": "—",
             "news_derniere_maj": "—",
             "news_calendar_frais": True,
+            # Simulation paper trading (slippage)
+            "paper_sim_actif": False,
+            "paper_sim_nb_executions": 0,
+            "paper_sim_slippage_moyen_pts": 0.0,
+            "paper_sim_slippage_total_usd": 0.0,
+            "paper_sim_latence_moy_ms": 0.0,
+            "paper_sim_nb_requotes": 0,
+            "paper_sim_nb_partiels": 0,
+            "paper_sim_derniere_qualite": "—",
+            "paper_sim_condition_actuelle": "—",
+            "paper_sim_spread_simule": 0.0,
+            "paper_sim_impact_pct": 0.0,
+            "paper_sim_pnl_paper": 0.0,
             # Pyramiding
             "pyramiding_enabled": True,
             "pyramiding_addon_actif": False,
@@ -695,6 +708,115 @@ class Dashboard:
 
         return Panel(table, title="🌅 DAILY BIAS XAUUSD", border_style=couleur_bord)
 
+    def _construire_panel_paper_simulation(self) -> Panel:
+        """Panneau simulation paper trading (slippage réaliste). Mode paper uniquement."""
+        e = self._etat
+
+        if self.mode != "PAPER":
+            contenu = Text("Mode live — simulation désactivée", style="dim italic")
+            return Panel(contenu, title="🎲 SIMULATION PAPER", border_style="dim")
+
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=20)
+        table.add_column("Valeur", width=33)
+
+        nb = e.get("paper_sim_nb_executions", 0)
+
+        if nb == 0:
+            table.add_row("Statut", Text("⏳ En attente du premier ordre simulé", style="dim"))
+            return Panel(table, title="🎲 SIMULATION PAPER TRADING", border_style="cyan")
+
+        # Qualité moyenne
+        slippage_moy = e.get("paper_sim_slippage_moyen_pts", 0.0)
+        derniere_qual = e.get("paper_sim_derniere_qualite", "—")
+        if slippage_moy <= 2.0:
+            couleur_qual = "green"
+            emoji_qual = "🟢"
+        elif slippage_moy <= 5.0:
+            couleur_qual = "yellow"
+            emoji_qual = "🟡"
+        else:
+            couleur_qual = "red"
+            emoji_qual = "🔴"
+
+        table.add_row("Exécutions", f"{nb} ordres simulés")
+        table.add_row(
+            "Qualité moy.",
+            Text(
+                f"{emoji_qual} {derniere_qual} (slip. moy: {slippage_moy:.1f} pts)",
+                style=couleur_qual
+            )
+        )
+
+        slippage_usd = e.get("paper_sim_slippage_total_usd", 0.0)
+        table.add_row(
+            "Slippage total",
+            Text(f"${slippage_usd:.2f}  (sur {nb} ordres)", style="yellow")
+        )
+
+        latence = e.get("paper_sim_latence_moy_ms", 0.0)
+        table.add_row("Latence moy.", f"{latence:.0f}ms")
+
+        nb_requotes = e.get("paper_sim_nb_requotes", 0)
+        nb_partiels = e.get("paper_sim_nb_partiels", 0)
+        taux_req = nb_requotes / nb * 100 if nb > 0 else 0.0
+        table.add_row(
+            "Requotes",
+            Text(
+                f"{nb_requotes}  ({taux_req:.1f}% des ordres)",
+                style="yellow" if nb_requotes > 0 else "dim"
+            )
+        )
+        if nb_partiels > 0:
+            table.add_row(
+                "Partiels",
+                Text(f"{nb_partiels}", style="yellow")
+            )
+
+        # Condition actuelle
+        condition = e.get("paper_sim_condition_actuelle", "—")
+        spread_sim = e.get("paper_sim_spread_simule", 0.0)
+        from datetime import datetime as _dt
+        heure = _dt.utcnow().hour
+        couleur_cond = {
+            "CALME": "green", "NORMAL": "cyan",
+            "VOLATIL": "yellow", "NEWS": "red", "OUVERTURE": "magenta",
+        }.get(condition, "dim")
+        table.add_row(
+            "Condition marché",
+            Text(f"{condition} (spread simulé: {spread_sim:.0f} pts)", style=couleur_cond)
+        )
+
+        # Impact estimé
+        impact = e.get("paper_sim_impact_pct", 0.0)
+        pnl_paper = e.get("paper_sim_pnl_paper", 0.0)
+        pnl_live_estime = pnl_paper * (1 - impact / 100) if pnl_paper != 0 else 0.0
+
+        signe = "⚠️ " if impact > 0.5 else ""
+        table.add_row(
+            "Impact live est.",
+            Text(f"{signe}-{impact:.3f}% du capital attendu", style="yellow" if impact > 0.3 else "dim")
+        )
+        if pnl_paper != 0:
+            couleur_pnl = "green" if pnl_paper >= 0 else "red"
+            table.add_row(
+                "P&L paper",
+                Text(f"${pnl_paper:+.2f}", style=couleur_pnl)
+            )
+            table.add_row(
+                "P&L live estimé",
+                Text(
+                    f"${pnl_live_estime:+.2f}  (après slippage réel)",
+                    style="dim"
+                )
+            )
+
+        return Panel(
+            table,
+            title="🎲 SIMULATION PAPER TRADING (slippage réaliste)",
+            border_style="cyan"
+        )
+
     def _construire_panel_pyramiding(self) -> Panel:
         """Panneau pyramiding add-on."""
         e = self._etat
@@ -868,6 +990,10 @@ class Dashboard:
         layout.add_row(
             self._construire_panel_daily_bias(),
             self._construire_panel_pyramiding(),
+        )
+        layout.add_row(
+            self._construire_panel_paper_simulation(),
+            Text(""),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))

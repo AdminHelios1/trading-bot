@@ -130,6 +130,11 @@ class Config:
     BACKTEST_CAPITAL_INITIAL: float = 10_000.0
     BACKTEST_CSV_CACHE: str = "reports/cache_ohlcv_{symbole}_{tf}.csv"
 
+    # ── Paper Trading / Simulation slippage ───────────────────────────────
+    PAPER_MAX_REQUOTE_DEVIATION_PTS: float = 5.0   # Déviation max acceptée sur requote
+    PAPER_SLIPPAGE_SEED: int = 0                   # 0 = aléatoire, >0 = reproductible
+    PAPER_RAPPORT_A_L_ARRET: bool = True           # Générer le rapport à l'arrêt
+
     # ── Pyramiding ────────────────────────────────────────────────────────
     PYRAMIDING_ENABLED: bool = True           # Activer/désactiver le pyramiding
     ADDON_RISQUE_PCT: float = 0.5             # % du capital risqué sur l'add-on (jamais >0.5%)

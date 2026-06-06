@@ -35,6 +35,7 @@ from spread_monitor import MoniteurSpread
 from spread_filter import FiltreSpread
 from circuit_breaker import CircuitBreaker, NiveauCB
 from daily_stats_tracker import SuiveurStatsJournalieres, ResultatTrade
+from slippage_simulator import SimulateurSlippage
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -121,6 +122,21 @@ def boucle_principale(mode: str) -> None:
     dashboard = Dashboard(mode=mode)
     notifier = NotificateurTelegram()
 
+    # ── Simulateur de slippage (mode paper uniquement) ─────────────────────
+    simulateur_slippage = None
+    if mode == "paper":
+        seed = CONFIG.PAPER_SLIPPAGE_SEED  # 0 = aléatoire
+        simulateur_slippage = SimulateurSlippage(
+            connecteur=connecteur,
+            config=CONFIG,
+            seed=seed,
+        )
+        # Sera injecté dans le simulateur une fois le moniteur spread disponible
+        logger.info(
+            f"Simulateur slippage initialisé — "
+            f"seed: {'aléatoire' if seed == 0 else seed}"
+        )
+
     # ── Initialisation du filtre news ─────────────────────────────────────
     logger.info("Chargement du calendrier économique...")
     fetcher = RecuperateurCalendrier()
@@ -164,6 +180,12 @@ def boucle_principale(mode: str) -> None:
     moniteur_spread = MoniteurSpread(connecteur=connecteur)
     filtre_spread = FiltreSpread(moniteur=moniteur_spread, connecteur=connecteur)
     logger.info("Filtre spread initialisé")
+
+    # Injecter le moniteur spread et filtre news dans le simulateur
+    if simulateur_slippage is not None:
+        simulateur_slippage.moniteur_spread = moniteur_spread
+        simulateur_slippage.filtre_news = filtre_news
+        connecteur.activer_mode_paper(simulateur_slippage)
 
     # ── Initialisation du circuit breaker ─────────────────────────────────
     suiveur_stats = SuiveurStatsJournalieres(connecteur=connecteur)
@@ -449,6 +471,21 @@ def boucle_principale(mode: str) -> None:
         logger.critical(f"Exception non catchée: {e}\n{traceback.format_exc()}")
         notifier.alerte_erreur(str(e))
     finally:
+        # ── Rapport de simulation à l'arrêt (mode paper) ──────────────────
+        if (mode == "paper"
+                and simulateur_slippage is not None
+                and CONFIG.PAPER_RAPPORT_A_L_ARRET
+                and simulateur_slippage._executions):
+            try:
+                logger.info("Génération du rapport de simulation paper trading...")
+                rapport = simulateur_slippage.generate_report()
+                logger.info(
+                    f"Rapport généré : {rapport.total_executions} exécutions | "
+                    f"Impact live estimé : -{rapport.impact_live_estime_pct:.3f}%"
+                )
+            except Exception as e:
+                logger.warning(f"Rapport paper non généré : {e}")
+
         arreter_scheduler_news(scheduler_news)
         dashboard.arreter()
         connecteur.deconnecter()
