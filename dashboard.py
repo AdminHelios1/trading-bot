@@ -52,6 +52,8 @@ class Dashboard:
             "circuit_breaker": False,
             "bot_arrete": False,
             "derniere_mise_a_jour": "",
+            # Order Blocks multi-TF
+            "obs_actifs": [],   # Liste de dicts résumés des OB
             # Filtre spread
             "spread_tradeable": True,
             "spread_raison_blocage": "",
@@ -293,6 +295,43 @@ class Dashboard:
         couleur_bord = "red" if not e["spread_tradeable"] else "blue"
         return Panel(table, title="📡 SPREAD & VOLATILITÉ", border_style=couleur_bord)
 
+    def _construire_panel_ob(self) -> Panel:
+        """Panneau affichant les Order Blocks multi-TF actifs."""
+        e = self._etat
+        obs = e.get("obs_actifs", [])
+
+        if not obs:
+            contenu = Text("Aucun OB multi-TF valide (score ≥ 60)", style="dim italic")
+            return Panel(contenu, title="🏛️  ORDER BLOCKS ACTIFS", border_style="yellow")
+
+        table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+        table.add_column("Direction", width=11)
+        table.add_column("Score", width=8)
+        table.add_column("Zone", width=18)
+        table.add_column("TF", width=12)
+        table.add_column("Force", width=15)
+        table.add_column("Confluences", width=25)
+
+        for ob in obs[:4]:  # Afficher les 4 meilleurs
+            direction = ob.get("direction", "?")
+            couleur = "green" if "HAUSSIER" in direction else "red"
+            score = ob.get("score", 0)
+            zone = ob.get("zone", "—")
+            tf = ob.get("tf", "—")
+            force = ob.get("force", "—")
+            confluences = ob.get("confluences_str", "—")[:22]
+
+            table.add_row(
+                Text(direction, style=f"bold {couleur}"),
+                f"{score}/100",
+                zone,
+                tf,
+                Text(force, style="bold cyan" if "INSTIT" in force else "cyan"),
+                confluences,
+            )
+
+        return Panel(table, title="🏛️  ORDER BLOCKS ACTIFS (multi-TF)", border_style="yellow")
+
     def _construire_panel_stats(self) -> Panel:
         """Panneau affichant les statistiques du jour et globales."""
         e = self._etat
@@ -360,6 +399,10 @@ class Dashboard:
         layout.add_row(
             self._construire_panel_news(),
             self._construire_panel_spread(),
+        )
+        layout.add_row(
+            self._construire_panel_ob(),
+            Text(""),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))

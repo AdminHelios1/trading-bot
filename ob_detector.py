@@ -1,10 +1,11 @@
 """
-ob_detector.py — Détection des Order Blocks et Breaker Blocks (SMC).
-Un OB est la dernière bougie opposée avant un mouvement impulsif avec FVG.
-Un Breaker Block est un OB invalidé qui devient une zone de retournement.
+ob_detector.py — Détection des Order Blocks multi-timeframes (H4 + H1 + M15).
+Un OB sans confirmation H4 est rejeté automatiquement.
+Seuls les OB avec score >= 60 (FORT ou INSTITUTIONNEL) sont retournés.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Tuple
 import pandas as pd
@@ -12,468 +13,675 @@ import numpy as np
 from loguru import logger
 
 from config import CONFIG
+from indicators import Indicateurs
 
 
-class TypeZone(Enum):
-    """Nature de la zone institutionnelle."""
-    ORDER_BLOCK_HAUSSIER = "OB_BULL"
-    ORDER_BLOCK_BAISSIER = "OB_BEAR"
-    BREAKER_BLOCK_HAUSSIER = "BB_BULL"  # Ancien OB baissier revalidé
-    BREAKER_BLOCK_BAISSIER = "BB_BEAR"  # Ancien OB haussier revalidé
+# ── Énumérations ───────────────────────────────────────────────────────────
 
+class TypeOB(Enum):
+    HAUSSIER = "bullish"   # Zone de demande — entrée LONG
+    BAISSIER = "bearish"   # Zone d'offre — entrée SHORT
+
+
+class ForceOB(Enum):
+    FAIBLE = "FAIBLE"               # Score 0–39 : OB seul M15, à ignorer
+    MODERE = "MODÉRÉ"               # Score 40–59 : confirmé H1 uniquement
+    FORT = "FORT"                   # Score 60–79 : confirmé H4 + H1
+    INSTITUTIONNEL = "INSTITUTIONNEL"  # Score 80–100 : alignement parfait 3 TF
+
+
+class StatutOB(Enum):
+    ACTIF = "actif"           # Zone intacte, jamais touchée
+    TESTE = "testé"           # Touché 1 fois, encore valide
+    EPUISE = "épuisé"         # Touché 2 fois → ignorer
+    INVALIDE = "invalidé"     # Prix a clôturé au-delà
+
+
+# ── Dataclasses ────────────────────────────────────────────────────────────
 
 @dataclass
-class ZoneInstitutionnelle:
-    """Un Order Block ou Breaker Block identifié."""
-    type: TypeZone
-    prix_bas: float
-    prix_haut: float
-    timestamp: pd.Timestamp
-    index_bougie: int
+class ZoneOB:
+    """Order Block détecté sur un seul timeframe."""
+    timeframe: str           # "H4", "H1", "M15"
+    type_ob: TypeOB
+    zone_haut: float
+    zone_bas: float
+    zone_milieu: float
+    forme_a: datetime
+    bougie_open: float
+    bougie_haut: float
+    bougie_bas: float
+    bougie_close: float
+    taille_impulsion: float  # Taille du mouvement impulsif suivant (en $)
+    fvg_present: bool
+    fvg_taille_pct: float    # FVG en % du prix
     nb_touches: int = 0
-    est_actif: bool = True
-    # Bougie qui a créé le mouvement impulsif après l'OB
-    index_impulsion: int = 0
-    # Force du FVG associé (en %)
-    force_fvg_pct: float = 0.0
-
-    @property
-    def milieu(self) -> float:
-        """Centre de la zone."""
-        return (self.prix_bas + self.prix_haut) / 2
+    statut: StatutOB = StatutOB.ACTIF
 
     @property
     def est_haussier(self) -> bool:
-        return self.type in (TypeZone.ORDER_BLOCK_HAUSSIER, TypeZone.BREAKER_BLOCK_HAUSSIER)
+        return self.type_ob == TypeOB.HAUSSIER
 
     def contient(self, prix: float) -> bool:
-        """Vérifie si le prix est à l'intérieur de la zone."""
-        return self.prix_bas <= prix <= self.prix_haut
+        return self.zone_bas <= prix <= self.zone_haut
 
+
+@dataclass
+class OBMultiTimeframe:
+    """Order Block validé sur plusieurs timeframes — seul celui-ci est tradeable."""
+    type_ob: TypeOB
+    symbole: str
+
+    # Zones par timeframe (None si absent)
+    zone_h4: Optional[ZoneOB] = None
+    zone_h1: Optional[ZoneOB] = None
+    zone_m15: Optional[ZoneOB] = None
+
+    # Zone d'entrée finale (intersection des zones alignées)
+    zone_entree_haut: float = 0.0
+    zone_entree_bas: float = 0.0
+    zone_entree_milieu: float = 0.0
+
+    # Scoring
+    score: int = 0
+    force: ForceOB = ForceOB.FAIBLE
+
+    # Métadonnées
+    cree_a: datetime = field(default_factory=datetime.utcnow)
+    mis_a_jour_a: datetime = field(default_factory=datetime.utcnow)
+    statut: StatutOB = StatutOB.ACTIF
+    niveau_invalidation: float = 0.0
+    nb_touches: int = 0
+
+    # Confluences détectées
+    confluences: List[str] = field(default_factory=list)
+
+    @property
+    def est_haussier(self) -> bool:
+        return self.type_ob == TypeOB.HAUSSIER
+
+    @property
+    def nb_timeframes(self) -> int:
+        return sum([
+            self.zone_h4 is not None,
+            self.zone_h1 is not None,
+            self.zone_m15 is not None,
+        ])
+
+
+# ── Détecteur principal ────────────────────────────────────────────────────
 
 class DetecteurOB:
-    """Détecte et gère les Order Blocks et Breaker Blocks sur les données H4."""
+    """
+    Détecte les Order Blocks sur 3 timeframes alignés (H4 + H1 + M15).
+    H4 est obligatoire — un OB sans H4 est rejeté.
+    Ne retourne que les OB avec score >= 60 (FORT ou INSTITUTIONNEL).
+    """
 
-    def __init__(self) -> None:
-        self.lookback: int = CONFIG.OB_LOOKBACK_BOUGIES
-        self.min_imbalance_pct: float = CONFIG.OB_MIN_IMBALANCE_PCT
-        self.max_touches: int = CONFIG.OB_MAX_TOUCHES
-        self.bb_lookback: int = CONFIG.BB_LOOKBACK_BOUGIES
-
-    # ── Détection FVG ─────────────────────────────────────────────────────
-
-    def _calculer_fvg(
-        self,
-        df: pd.DataFrame,
-        index_impulsion: int,
-        direction: str,
-    ) -> float:
+    def __init__(self, connecteur=None) -> None:
         """
-        Calcule le Fair Value Gap (FVG) associé à un mouvement impulsif.
-        FVG haussier : espace entre le High de bougie[i-1] et le Low de bougie[i+1].
-        FVG baissier : espace entre le Low de bougie[i-1] et le High de bougie[i+1].
-
         Args:
-            df: DataFrame OHLCV.
-            index_impulsion: Index de la bougie impulsive.
-            direction: "BULL" ou "BEAR".
-
-        Returns:
-            FVG en pourcentage du prix.
+            connecteur: Instance ConnecteurMT5 (peut être None en mode test).
         """
-        if index_impulsion <= 0 or index_impulsion >= len(df) - 1:
-            return 0.0
+        self.connecteur = connecteur
+        self._obs_actifs: List[OBMultiTimeframe] = []
 
-        prix_ref = df["close"].iloc[index_impulsion]
-        if prix_ref <= 0:
-            return 0.0
-
-        if direction == "BULL":
-            # Gap entre high[i-1] et low[i+1]
-            fvg = df["low"].iloc[index_impulsion + 1] - df["high"].iloc[index_impulsion - 1]
-        else:
-            # Gap entre low[i-1] et high[i+1]
-            fvg = df["low"].iloc[index_impulsion - 1] - df["high"].iloc[index_impulsion + 1]
-
-        fvg_pct = abs(fvg) / prix_ref * 100
-        return max(0.0, fvg_pct)
-
-    # ── Détection mouvement impulsif ───────────────────────────────────────
-
-    def _est_impulsif(
-        self,
-        df: pd.DataFrame,
-        index: int,
-        direction: str,
-        seuil_corps_pct: float = 0.5,
-    ) -> bool:
-        """
-        Vérifie si une bougie est impulsive (corps > 50% de la range totale).
-
-        Args:
-            df: DataFrame OHLCV.
-            index: Index de la bougie.
-            direction: "BULL" pour haussier, "BEAR" pour baissier.
-            seuil_corps_pct: Part minimale du corps sur la range totale.
-
-        Returns:
-            True si la bougie est impulsive.
-        """
-        bougie = df.iloc[index]
-        range_totale = bougie["high"] - bougie["low"]
-        if range_totale <= 0:
-            return False
-
-        corps = abs(bougie["close"] - bougie["open"])
-        ratio_corps = corps / range_totale
-
-        if ratio_corps < seuil_corps_pct:
-            return False
-
-        if direction == "BULL":
-            return bougie["close"] > bougie["open"]
-        return bougie["close"] < bougie["open"]
-
-    # ── Détection Order Blocks ─────────────────────────────────────────────
-
-    def detecter_order_blocks(self, df: pd.DataFrame) -> List[ZoneInstitutionnelle]:
-        """
-        Détecte tous les Order Blocks valides dans la fenêtre lookback.
-
-        Algorithme :
-        1. Identifier les mouvements impulsifs (bougies avec FVG ≥ seuil)
-        2. Pour chaque impulsion haussière → OB = dernière bougie baissière avant
-        3. Pour chaque impulsion baissière → OB = dernière bougie haussière avant
-        4. Vérifier que la zone est encore "fraîche" (non traversée)
-
-        Args:
-            df: DataFrame OHLCV H4.
-
-        Returns:
-            Liste des OB actifs dans l'ordre chronologique.
-        """
-        zones: List[ZoneInstitutionnelle] = []
-        debut = max(2, len(df) - self.lookback)
-
-        for i in range(debut, len(df) - 1):
-            # ── OB Haussier ────────────────────────────────────────────────
-            if self._est_impulsif(df, i, "BULL"):
-                fvg_pct = self._calculer_fvg(df, i, "BULL")
-                if fvg_pct >= self.min_imbalance_pct:
-                    # Chercher la dernière bougie baissière AVANT i
-                    ob_index = self._trouver_derniere_bougie_opposee(df, i, "BEAR")
-                    if ob_index is not None:
-                        bougie_ob = df.iloc[ob_index]
-                        zone = ZoneInstitutionnelle(
-                            type=TypeZone.ORDER_BLOCK_HAUSSIER,
-                            prix_bas=bougie_ob["low"],
-                            prix_haut=bougie_ob["high"],
-                            timestamp=df.index[ob_index],
-                            index_bougie=ob_index,
-                            index_impulsion=i,
-                            force_fvg_pct=fvg_pct,
-                        )
-                        zones.append(zone)
-
-            # ── OB Baissier ────────────────────────────────────────────────
-            if self._est_impulsif(df, i, "BEAR"):
-                fvg_pct = self._calculer_fvg(df, i, "BEAR")
-                if fvg_pct >= self.min_imbalance_pct:
-                    ob_index = self._trouver_derniere_bougie_opposee(df, i, "BULL")
-                    if ob_index is not None:
-                        bougie_ob = df.iloc[ob_index]
-                        zone = ZoneInstitutionnelle(
-                            type=TypeZone.ORDER_BLOCK_BAISSIER,
-                            prix_bas=bougie_ob["low"],
-                            prix_haut=bougie_ob["high"],
-                            timestamp=df.index[ob_index],
-                            index_bougie=ob_index,
-                            index_impulsion=i,
-                            force_fvg_pct=fvg_pct,
-                        )
-                        zones.append(zone)
-
-        # Filtrer les OB encore actifs et mettre à jour les touches
-        zones_actives = self._filtrer_zones_actives(df, zones)
-
-        logger.debug(
-            f"OB détectés: {len(zones)} total | "
-            f"{len(zones_actives)} actifs | "
-            f"Bull: {sum(1 for z in zones_actives if z.est_haussier)} | "
-            f"Bear: {sum(1 for z in zones_actives if not z.est_haussier)}"
-        )
-        return zones_actives
-
-    def _trouver_derniere_bougie_opposee(
-        self,
-        df: pd.DataFrame,
-        index_impulsion: int,
-        direction_opposee: str,
-        lookback_local: int = 10,
-    ) -> Optional[int]:
-        """
-        Trouve la dernière bougie dans la direction opposée avant l'impulsion.
-
-        Args:
-            df: DataFrame OHLCV.
-            index_impulsion: Index de la bougie impulsive.
-            direction_opposee: "BULL" ou "BEAR".
-            lookback_local: Fenêtre de recherche.
-
-        Returns:
-            Index de la bougie OB, ou None.
-        """
-        debut = max(0, index_impulsion - lookback_local)
-        for i in range(index_impulsion - 1, debut - 1, -1):
-            bougie = df.iloc[i]
-            if direction_opposee == "BEAR" and bougie["close"] < bougie["open"]:
-                return i
-            if direction_opposee == "BULL" and bougie["close"] > bougie["open"]:
-                return i
-        return None
-
-    def _filtrer_zones_actives(
-        self,
-        df: pd.DataFrame,
-        zones: List[ZoneInstitutionnelle],
-    ) -> List[ZoneInstitutionnelle]:
-        """
-        Filtre les zones encore actives et compte les touches.
-        Un OB est invalidé si le prix clôture complètement au-delà.
-
-        Args:
-            df: DataFrame OHLCV complet.
-            zones: Toutes les zones détectées.
-
-        Returns:
-            Zones encore actives avec nb_touches mis à jour.
-        """
-        closes = df["close"].values
-        highs = df["high"].values
-        lows = df["low"].values
-
-        zones_actives = []
-        for zone in zones:
-            # Analyser les bougies APRÈS la création de l'OB
-            touches = 0
-            invalide = False
-
-            for i in range(zone.index_bougie + 1, len(df)):
-                # Compter les touches (prix entre dans la zone)
-                if zone.contient(lows[i]) or zone.contient(highs[i]):
-                    touches += 1
-
-                # Invalidation : close au-delà de la zone (prix traverse complètement)
-                if zone.est_haussier and closes[i] < zone.prix_bas:
-                    invalide = True
-                    break
-                if not zone.est_haussier and closes[i] > zone.prix_haut:
-                    invalide = True
-                    break
-
-            zone.nb_touches = touches
-            zone.est_actif = not invalide and touches <= self.max_touches
-
-            if zone.est_actif:
-                zones_actives.append(zone)
-
-        return zones_actives
-
-    # ── Détection Breaker Blocks ───────────────────────────────────────────
-
-    def detecter_breaker_blocks(
-        self,
-        df: pd.DataFrame,
-        order_blocks_invalides: List[ZoneInstitutionnelle],
-    ) -> List[ZoneInstitutionnelle]:
-        """
-        Convertit les OB invalidés en Breaker Blocks si le prix les reteste.
-        Un Breaker Block = OB traversé + retour dans la zone par l'autre côté.
-
-        Args:
-            df: DataFrame OHLCV H4.
-            order_blocks_invalides: OB dont est_actif=False.
-
-        Returns:
-            Liste des Breaker Blocks actifs.
-        """
-        breakers: List[ZoneInstitutionnelle] = []
-        closes = df["close"].values
-
-        for ob in order_blocks_invalides:
-            # Chercher si après l'invalidation, le prix revient dans la zone
-            for i in range(ob.index_bougie + 1, len(df)):
-                # Breaker Block haussier : OB baissier invalidé par mouvement haussier
-                # → Le prix repasse dans la zone (pullback) → zone de demande
-                if (
-                    ob.type == TypeZone.ORDER_BLOCK_BAISSIER
-                    and closes[i] > ob.prix_haut  # Traverse vers le haut
-                ):
-                    # Chercher un retour dans la zone
-                    for j in range(i + 1, len(df)):
-                        if ob.contient(df["low"].iloc[j]) or ob.contient(df["high"].iloc[j]):
-                            breaker = ZoneInstitutionnelle(
-                                type=TypeZone.BREAKER_BLOCK_HAUSSIER,
-                                prix_bas=ob.prix_bas,
-                                prix_haut=ob.prix_haut,
-                                timestamp=ob.timestamp,
-                                index_bougie=ob.index_bougie,
-                                index_impulsion=i,
-                                force_fvg_pct=ob.force_fvg_pct,
-                                nb_touches=1,
-                                est_actif=True,
-                            )
-                            breakers.append(breaker)
-                            break
-                    break
-
-                # Breaker Block baissier : OB haussier invalidé
-                if (
-                    ob.type == TypeZone.ORDER_BLOCK_HAUSSIER
-                    and closes[i] < ob.prix_bas
-                ):
-                    for j in range(i + 1, len(df)):
-                        if ob.contient(df["low"].iloc[j]) or ob.contient(df["high"].iloc[j]):
-                            breaker = ZoneInstitutionnelle(
-                                type=TypeZone.BREAKER_BLOCK_BAISSIER,
-                                prix_bas=ob.prix_bas,
-                                prix_haut=ob.prix_haut,
-                                timestamp=ob.timestamp,
-                                index_bougie=ob.index_bougie,
-                                index_impulsion=i,
-                                force_fvg_pct=ob.force_fvg_pct,
-                                nb_touches=1,
-                                est_actif=True,
-                            )
-                            breakers.append(breaker)
-                            break
-                    break
-
-        logger.debug(f"Breaker Blocks détectés: {len(breakers)}")
-        return breakers
+    # ── Point d'entrée principal ───────────────────────────────────────────
 
     def detecter_toutes_zones(
         self,
-        df: pd.DataFrame,
-    ) -> Tuple[List[ZoneInstitutionnelle], List[ZoneInstitutionnelle]]:
+        df_h4: pd.DataFrame,
+        df_h1: Optional[pd.DataFrame] = None,
+        df_m15: Optional[pd.DataFrame] = None,
+    ) -> Tuple[List[OBMultiTimeframe], List[OBMultiTimeframe]]:
         """
-        Détecte TOUS les OB et Breaker Blocks en une passe.
+        Interface de compatibilité avec l'ancienne API.
+        Retourne (ob_actifs, breakers) pour ne pas casser strategy.py.
 
         Args:
-            df: DataFrame OHLCV H4.
+            df_h4: DataFrame H4 (obligatoire).
+            df_h1: DataFrame H1 (optionnel).
+            df_m15: DataFrame M15 (optionnel).
 
         Returns:
-            Tuple (order_blocks_actifs, breaker_blocks_actifs).
+            Tuple (ob_haussiers_actifs, ob_baissiers_actifs).
         """
-        # Détecter tous les OB (actifs + invalidés pour les BB)
-        tous_ob = self._detecter_tous_ob_bruts(df)
-        ob_actifs = [z for z in tous_ob if z.est_actif]
-        ob_invalides = [z for z in tous_ob if not z.est_actif]
+        obs = self.detecter_multi_tf(df_h4, df_h1, df_m15)
+        haussiers = [ob for ob in obs if ob.est_haussier]
+        baissiers = [ob for ob in obs if not ob.est_haussier]
+        return haussiers, baissiers
 
-        # Détecter les BB à partir des OB invalidés
-        breakers = self.detecter_breaker_blocks(df, ob_invalides)
+    def detecter_multi_tf(
+        self,
+        df_h4: pd.DataFrame,
+        df_h1: Optional[pd.DataFrame] = None,
+        df_m15: Optional[pd.DataFrame] = None,
+    ) -> List[OBMultiTimeframe]:
+        """
+        Détecte et retourne tous les OB multi-TF actifs, triés par score décroissant.
+        Ne retourne QUE les OB de force FORT ou INSTITUTIONNEL (score >= 60).
 
-        return ob_actifs, breakers
+        Args:
+            df_h4: DataFrame H4 (obligatoire).
+            df_h1: DataFrame H1 (optionnel, améliore le score).
+            df_m15: DataFrame M15 (optionnel, affine l'entrée).
 
-    def _detecter_tous_ob_bruts(self, df: pd.DataFrame) -> List[ZoneInstitutionnelle]:
-        """Variante interne qui retourne TOUS les OB (actifs ET invalidés)."""
-        zones: List[ZoneInstitutionnelle] = []
-        debut = max(2, len(df) - self.bb_lookback)
+        Returns:
+            Liste d'OBMultiTimeframe triée par score décroissant.
+        """
+        from ob_scorer import ScorerOB
 
-        for i in range(debut, len(df) - 1):
-            if self._est_impulsif(df, i, "BULL"):
-                fvg_pct = self._calculer_fvg(df, i, "BULL")
-                if fvg_pct >= self.min_imbalance_pct:
-                    ob_index = self._trouver_derniere_bougie_opposee(df, i, "BEAR")
-                    if ob_index is not None:
-                        bougie_ob = df.iloc[ob_index]
-                        zones.append(ZoneInstitutionnelle(
-                            type=TypeZone.ORDER_BLOCK_HAUSSIER,
-                            prix_bas=bougie_ob["low"],
-                            prix_haut=bougie_ob["high"],
-                            timestamp=df.index[ob_index],
-                            index_bougie=ob_index,
-                            index_impulsion=i,
-                            force_fvg_pct=fvg_pct,
-                        ))
+        scorer = ScorerOB()
 
-            if self._est_impulsif(df, i, "BEAR"):
-                fvg_pct = self._calculer_fvg(df, i, "BEAR")
-                if fvg_pct >= self.min_imbalance_pct:
-                    ob_index = self._trouver_derniere_bougie_opposee(df, i, "BULL")
-                    if ob_index is not None:
-                        bougie_ob = df.iloc[ob_index]
-                        zones.append(ZoneInstitutionnelle(
-                            type=TypeZone.ORDER_BLOCK_BAISSIER,
-                            prix_bas=bougie_ob["low"],
-                            prix_haut=bougie_ob["high"],
-                            timestamp=df.index[ob_index],
-                            index_bougie=ob_index,
-                            index_impulsion=i,
-                            force_fvg_pct=fvg_pct,
-                        ))
+        # Calculer ATR pour chaque TF disponible
+        df_h4_atr = self._ajouter_atr(df_h4)
+        df_h1_atr = self._ajouter_atr(df_h1) if df_h1 is not None else None
+        df_m15_atr = self._ajouter_atr(df_m15) if df_m15 is not None else None
 
-        # Marquer actifs vs invalidés
-        return self._marquer_invalidations(df, zones)
+        # Détecter les OB bruts sur chaque TF
+        obs_h4 = self._detecter_sur_timeframe(df_h4_atr, "H4")
+        obs_h1 = self._detecter_sur_timeframe(df_h1_atr, "H1") if df_h1_atr is not None else []
+        obs_m15 = self._detecter_sur_timeframe(df_m15_atr, "M15") if df_m15_atr is not None else []
 
-    def _marquer_invalidations(
+        logger.debug(
+            f"OB bruts | H4: {len(obs_h4)} | H1: {len(obs_h1)} | M15: {len(obs_m15)}"
+        )
+
+        # Aligner les OB multi-TF
+        obs_mtf = self._aligner_multi_timeframe(obs_h4, obs_h1, obs_m15)
+
+        # Scorer chaque OB
+        for ob in obs_mtf:
+            ob.score = scorer.calculer_score(ob, df_h4_atr, df_h1_atr, df_m15_atr)
+            ob.force = self._score_vers_force(ob.score)
+            ob.confluences = scorer.detecter_confluences(ob, df_h4_atr)
+
+        # Filtrer : FORT et INSTITUTIONNEL uniquement (score >= 60)
+        obs_valides = [ob for ob in obs_mtf if ob.score >= 60 and ob.nb_touches < 2]
+
+        # Trier par score décroissant
+        obs_valides.sort(key=lambda x: x.score, reverse=True)
+
+        # Mettre à jour le statut des OB
+        if df_m15 is not None and len(df_m15) > 0:
+            self._mettre_a_jour_statuts(obs_valides, df_m15)
+
+        self._obs_actifs = obs_valides
+        logger.info(
+            f"OB multi-TF | {len(obs_h4)} H4 + {len(obs_h1)} H1 + {len(obs_m15)} M15 "
+            f"→ {len(obs_valides)} OB valides (score ≥ 60)"
+        )
+        return obs_valides
+
+    # ── Détection par timeframe ────────────────────────────────────────────
+
+    def _detecter_sur_timeframe(
         self,
         df: pd.DataFrame,
-        zones: List[ZoneInstitutionnelle],
-    ) -> List[ZoneInstitutionnelle]:
-        """Marque est_actif=False pour les OB dont le prix a clôturé au-delà."""
-        closes = df["close"].values
-        highs = df["high"].values
-        lows = df["low"].values
+        label_tf: str,
+    ) -> List[ZoneOB]:
+        """
+        Détecte les OB bruts sur un seul timeframe.
+        Utilise uniquement les bougies FERMÉES (iloc[-2] et avant).
 
-        for zone in zones:
-            touches = 0
-            for i in range(zone.index_bougie + 1, len(df)):
-                if zone.contient(lows[i]) or zone.contient(highs[i]):
-                    touches += 1
-                if zone.est_haussier and closes[i] < zone.prix_bas:
-                    zone.est_actif = False
-                    break
-                if not zone.est_haussier and closes[i] > zone.prix_haut:
-                    zone.est_actif = False
-                    break
-            zone.nb_touches = touches
-            if zone.est_actif and touches > self.max_touches:
-                zone.est_actif = False
+        Args:
+            df: DataFrame OHLCV avec colonne ATR.
+            label_tf: "H4", "H1" ou "M15".
 
-        return zones
+        Returns:
+            Liste de ZoneOB détectées.
+        """
+        if df is None or len(df) < 5:
+            return []
+
+        obs = []
+        cols_atr = [c for c in df.columns if c.startswith("atr_")]
+        col_atr = cols_atr[0] if cols_atr else None
+
+        # Analyser jusqu'à l'avant-dernière bougie ([-2]) pour éviter la bougie en cours
+        limite = len(df) - 2
+        debut = max(2, limite - 50)  # Fenêtre de 50 bougies
+
+        for i in range(debut, limite):
+            bougie = df.iloc[i]
+            suivante1 = df.iloc[i + 1]
+            suivante2 = df.iloc[i + 2] if i + 2 < len(df) else None
+            atr = float(df[col_atr].iloc[i]) if col_atr and not pd.isna(df[col_atr].iloc[i]) else 1.0
+
+            # Détection Bullish OB
+            ob_haussier = self._verifier_ob_haussier(bougie, suivante1, suivante2, atr, label_tf)
+            if ob_haussier:
+                ob_haussier.forme_a = df.index[i].to_pydatetime() if hasattr(df.index[i], 'to_pydatetime') else datetime.utcnow()
+                obs.append(ob_haussier)
+
+            # Détection Bearish OB
+            ob_baissier = self._verifier_ob_baissier(bougie, suivante1, suivante2, atr, label_tf)
+            if ob_baissier:
+                ob_baissier.forme_a = df.index[i].to_pydatetime() if hasattr(df.index[i], 'to_pydatetime') else datetime.utcnow()
+                obs.append(ob_baissier)
+
+        return obs
+
+    def _verifier_ob_haussier(
+        self,
+        bougie: pd.Series,
+        suivante1: pd.Series,
+        suivante2: Optional[pd.Series],
+        atr: float,
+        label_tf: str,
+    ) -> Optional[ZoneOB]:
+        """
+        Vérifie si une bougie forme un Bullish OB valide.
+
+        Conditions :
+        1. Bougie baissière OU longue mèche basse (> 60% du range)
+        2. Mouvement impulsif haussier suivant ≥ 1.2× ATR
+        3. FVG optionnel (améliore le score mais pas obligatoire)
+
+        Returns:
+            ZoneOB si valide, None sinon.
+        """
+        range_total = bougie["high"] - bougie["low"]
+        if range_total <= 0:
+            return None
+
+        # Condition 1 : bougie baissière OU longue mèche basse
+        est_baissiere = bougie["close"] < bougie["open"]
+        meche_basse = min(bougie["open"], bougie["close"]) - bougie["low"]
+        longue_meche_basse = (meche_basse / range_total) > 0.6 if range_total > 0 else False
+
+        if not (est_baissiere or longue_meche_basse):
+            return None
+
+        # Condition 2 : impulsion haussière suivante
+        impulsion1 = suivante1["close"] - suivante1["open"]
+        impulsion_valide = impulsion1 >= 1.2 * atr
+
+        if not impulsion_valide and suivante2 is not None:
+            impulsion_combinee = suivante2["close"] - bougie["close"]
+            impulsion_valide = impulsion_combinee >= 1.5 * atr
+
+        if not impulsion_valide:
+            return None
+
+        # Condition 3 : FVG (optionnel — améliore le score)
+        seuil_fvg = 0.2 if label_tf in ("H4", "H1") else 0.1
+        if suivante2 is not None:
+            fvg_taille = suivante2["open"] - bougie["high"]
+        else:
+            fvg_taille = suivante1["low"] - bougie["high"]
+
+        prix_ref = bougie["close"] if bougie["close"] > 0 else 1.0
+        fvg_pct = (fvg_taille / prix_ref) * 100
+        fvg_present = fvg_pct >= seuil_fvg
+
+        # Zone = du bas de la bougie OB au max(open, close)
+        zone_bas = bougie["low"]
+        zone_haut = max(bougie["open"], bougie["close"])
+        taille_impulsion = suivante1["high"] - bougie["low"]
+
+        return ZoneOB(
+            timeframe=label_tf,
+            type_ob=TypeOB.HAUSSIER,
+            zone_haut=zone_haut,
+            zone_bas=zone_bas,
+            zone_milieu=(zone_haut + zone_bas) / 2,
+            forme_a=datetime.utcnow(),  # Remplacé après
+            bougie_open=float(bougie["open"]),
+            bougie_haut=float(bougie["high"]),
+            bougie_bas=float(bougie["low"]),
+            bougie_close=float(bougie["close"]),
+            taille_impulsion=float(taille_impulsion),
+            fvg_present=fvg_present,
+            fvg_taille_pct=float(max(0.0, fvg_pct)),
+        )
+
+    def _verifier_ob_baissier(
+        self,
+        bougie: pd.Series,
+        suivante1: pd.Series,
+        suivante2: Optional[pd.Series],
+        atr: float,
+        label_tf: str,
+    ) -> Optional[ZoneOB]:
+        """
+        Vérifie si une bougie forme un Bearish OB valide (inverse exact du Bullish).
+
+        Conditions :
+        1. Bougie haussière OU longue mèche haute (> 60% du range)
+        2. Mouvement impulsif baissier suivant ≥ 1.2× ATR
+        3. FVG optionnel
+
+        Returns:
+            ZoneOB si valide, None sinon.
+        """
+        range_total = bougie["high"] - bougie["low"]
+        if range_total <= 0:
+            return None
+
+        # Condition 1 : bougie haussière OU longue mèche haute
+        est_haussiere = bougie["close"] > bougie["open"]
+        meche_haute = bougie["high"] - max(bougie["open"], bougie["close"])
+        longue_meche_haute = (meche_haute / range_total) > 0.6 if range_total > 0 else False
+
+        if not (est_haussiere or longue_meche_haute):
+            return None
+
+        # Condition 2 : impulsion baissière suivante
+        impulsion1 = suivante1["open"] - suivante1["close"]
+        impulsion_valide = impulsion1 >= 1.2 * atr
+
+        if not impulsion_valide and suivante2 is not None:
+            impulsion_combinee = bougie["close"] - suivante2["close"]
+            impulsion_valide = impulsion_combinee >= 1.5 * atr
+
+        if not impulsion_valide:
+            return None
+
+        # Condition 3 : FVG baissier (optionnel)
+        seuil_fvg = 0.2 if label_tf in ("H4", "H1") else 0.1
+        if suivante2 is not None:
+            fvg_taille = bougie["low"] - suivante2["open"]
+        else:
+            fvg_taille = bougie["low"] - suivante1["high"]
+
+        prix_ref = bougie["close"] if bougie["close"] > 0 else 1.0
+        fvg_pct = (fvg_taille / prix_ref) * 100
+        fvg_present = fvg_pct >= seuil_fvg
+
+        # Zone = du min(open, close) au high de la bougie OB
+        zone_bas = min(bougie["open"], bougie["close"])
+        zone_haut = bougie["high"]
+        taille_impulsion = bougie["high"] - suivante1["low"]
+
+        return ZoneOB(
+            timeframe=label_tf,
+            type_ob=TypeOB.BAISSIER,
+            zone_haut=zone_haut,
+            zone_bas=zone_bas,
+            zone_milieu=(zone_haut + zone_bas) / 2,
+            forme_a=datetime.utcnow(),
+            bougie_open=float(bougie["open"]),
+            bougie_haut=float(bougie["high"]),
+            bougie_bas=float(bougie["low"]),
+            bougie_close=float(bougie["close"]),
+            taille_impulsion=float(taille_impulsion),
+            fvg_present=fvg_present,
+            fvg_taille_pct=float(max(0.0, fvg_pct)),
+        )
+
+    # ── Alignement multi-timeframes ───────────────────────────────────────
+
+    def _aligner_multi_timeframe(
+        self,
+        obs_h4: List[ZoneOB],
+        obs_h1: List[ZoneOB],
+        obs_m15: List[ZoneOB],
+    ) -> List[OBMultiTimeframe]:
+        """
+        Aligne les OB des 3 TF pour trouver les zones de confluence.
+        H4 est le TF directeur — sans H4, l'OB est rejeté.
+        Deux zones s'alignent si leur overlap >= 30% de la plus petite zone.
+
+        Args:
+            obs_h4: OB détectés sur H4 (obligatoires).
+            obs_h1: OB détectés sur H1.
+            obs_m15: OB détectés sur M15.
+
+        Returns:
+            Liste d'OBMultiTimeframe.
+        """
+        obs_mtf = []
+
+        for ob_h4 in obs_h4:
+            mtf = OBMultiTimeframe(
+                type_ob=ob_h4.type_ob,
+                symbole=CONFIG.SYMBOLE,
+                zone_h4=ob_h4,
+            )
+
+            # Chercher un OB H1 aligné avec H4 (overlap >= 30%)
+            meilleur_h1 = self._trouver_meilleur_aligne(ob_h4, obs_h1, overlap_min_pct=30.0)
+            if meilleur_h1:
+                mtf.zone_h1 = meilleur_h1
+
+                # Chercher un OB M15 aligné avec H1 (overlap >= 40%)
+                meilleur_m15 = self._trouver_meilleur_aligne(meilleur_h1, obs_m15, overlap_min_pct=40.0)
+                if meilleur_m15:
+                    mtf.zone_m15 = meilleur_m15
+
+            # Zone d'entrée finale = intersection
+            haut, bas = self._calculer_zone_entree(mtf)
+            mtf.zone_entree_haut = haut
+            mtf.zone_entree_bas = bas
+            mtf.zone_entree_milieu = (haut + bas) / 2 if haut > bas else 0.0
+
+            # Niveau d'invalidation (10% au-delà de la zone H4)
+            marge = (ob_h4.zone_haut - ob_h4.zone_bas) * 0.1
+            if ob_h4.type_ob == TypeOB.HAUSSIER:
+                mtf.niveau_invalidation = ob_h4.zone_bas - marge
+            else:
+                mtf.niveau_invalidation = ob_h4.zone_haut + marge
+
+            obs_mtf.append(mtf)
+
+        return obs_mtf
+
+    def _trouver_meilleur_aligne(
+        self,
+        reference: ZoneOB,
+        candidats: List[ZoneOB],
+        overlap_min_pct: float,
+    ) -> Optional[ZoneOB]:
+        """
+        Trouve le meilleur OB aligné avec la zone de référence.
+        Critères : même type + overlap >= overlap_min_pct.
+
+        Args:
+            reference: Zone de référence.
+            candidats: Liste de zones candidates.
+            overlap_min_pct: Overlap minimum en % de la plus petite zone.
+
+        Returns:
+            Meilleure zone alignée ou None.
+        """
+        meilleur = None
+        meilleur_overlap = 0.0
+
+        for candidat in candidats:
+            # Même direction obligatoire
+            if candidat.type_ob != reference.type_ob:
+                continue
+
+            # Calcul du chevauchement
+            overlap_haut = min(reference.zone_haut, candidat.zone_haut)
+            overlap_bas = max(reference.zone_bas, candidat.zone_bas)
+
+            if overlap_haut <= overlap_bas:
+                continue  # Pas de chevauchement
+
+            taille_overlap = overlap_haut - overlap_bas
+            plus_petite_zone = min(
+                reference.zone_haut - reference.zone_bas,
+                candidat.zone_haut - candidat.zone_bas,
+            )
+            overlap_pct = (taille_overlap / plus_petite_zone * 100) if plus_petite_zone > 0 else 0.0
+
+            if overlap_pct >= overlap_min_pct and overlap_pct > meilleur_overlap:
+                meilleur_overlap = overlap_pct
+                meilleur = candidat
+
+        return meilleur
+
+    def _calculer_zone_entree(
+        self,
+        mtf: OBMultiTimeframe,
+    ) -> Tuple[float, float]:
+        """
+        Calcule la zone d'entrée finale comme INTERSECTION des zones disponibles.
+        Plus conservative et plus précise qu'une union.
+        Si l'intersection est invalide → fallback sur la zone H4.
+
+        Args:
+            mtf: OBMultiTimeframe avec les zones renseignées.
+
+        Returns:
+            Tuple (zone_haut, zone_bas).
+        """
+        zones = [z for z in [mtf.zone_h4, mtf.zone_h1, mtf.zone_m15] if z is not None]
+        if not zones:
+            return 0.0, 0.0
+
+        # Intersection = max des bas, min des hauts
+        entree_bas = max(z.zone_bas for z in zones)
+        entree_haut = min(z.zone_haut for z in zones)
+
+        # Si intersection invalide → fallback H4
+        if entree_haut <= entree_bas:
+            if mtf.zone_h4:
+                return mtf.zone_h4.zone_haut, mtf.zone_h4.zone_bas
+            return 0.0, 0.0
+
+        return entree_haut, entree_bas
+
+    # ── Mise à jour des statuts ────────────────────────────────────────────
+
+    def _mettre_a_jour_statuts(
+        self,
+        obs: List[OBMultiTimeframe],
+        df_m15: pd.DataFrame,
+    ) -> None:
+        """
+        Met à jour le statut des OB selon le prix actuel M15.
+        Utilise la bougie fermée (iloc[-2]).
+
+        Args:
+            obs: Liste des OB à mettre à jour.
+            df_m15: DataFrame M15.
+        """
+        if len(df_m15) < 2:
+            return
+
+        # Utiliser la DERNIÈRE BOUGIE FERMÉE (iloc[-2])
+        dernier_close = float(df_m15["close"].iloc[-2])
+        prix_haut = float(df_m15["high"].iloc[-2])
+        prix_bas = float(df_m15["low"].iloc[-2])
+
+        for ob in obs:
+            zone_haut = ob.zone_entree_haut
+            zone_bas = ob.zone_entree_bas
+
+            # Vérifier si le prix est entré dans la zone
+            prix_dans_zone = zone_bas <= dernier_close <= zone_haut or \
+                             zone_bas <= prix_haut <= zone_haut or \
+                             zone_bas <= prix_bas <= zone_haut
+
+            if prix_dans_zone and ob.statut == StatutOB.ACTIF:
+                ob.nb_touches += 1
+                ob.statut = StatutOB.TESTE
+                if ob.zone_h4:
+                    ob.zone_h4.nb_touches += 1
+                logger.info(
+                    f"OB {ob.type_ob.value} touché "
+                    f"(zone {zone_bas:.2f}–{zone_haut:.2f}) "
+                    f"— touch #{ob.nb_touches}"
+                )
+
+            # Épuiser si >= 2 touches
+            if ob.nb_touches >= 2:
+                ob.statut = StatutOB.EPUISE
+                continue
+
+            # Invalider si prix clôture au-delà du niveau d'invalidation
+            if ob.type_ob == TypeOB.HAUSSIER and dernier_close < ob.niveau_invalidation:
+                ob.statut = StatutOB.INVALIDE
+                logger.warning(
+                    f"OB HAUSSIER invalidé — close {dernier_close:.2f} "
+                    f"< invalidation {ob.niveau_invalidation:.2f}"
+                )
+            elif ob.type_ob == TypeOB.BAISSIER and dernier_close > ob.niveau_invalidation:
+                ob.statut = StatutOB.INVALIDE
+                logger.warning(
+                    f"OB BAISSIER invalidé — close {dernier_close:.2f} "
+                    f"> invalidation {ob.niveau_invalidation:.2f}"
+                )
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _ajouter_atr(self, df: pd.DataFrame, periode: int = 14) -> pd.DataFrame:
+        """
+        Ajoute la colonne ATR au DataFrame.
+
+        Args:
+            df: DataFrame OHLCV.
+            periode: Période ATR.
+
+        Returns:
+            DataFrame avec colonne atr_14.
+        """
+        if df is None or len(df) < periode + 1:
+            return df
+
+        df = df.copy()
+        atr_serie = Indicateurs.atr(df, periode)
+        df[f"atr_{periode}"] = atr_serie
+        return df
 
     def trouver_zone_la_plus_proche(
         self,
-        zones: List[ZoneInstitutionnelle],
+        zones: List[OBMultiTimeframe],
         prix_actuel: float,
         direction: str,
-    ) -> Optional[ZoneInstitutionnelle]:
+    ) -> Optional[OBMultiTimeframe]:
         """
-        Trouve la zone OB/BB la plus proche du prix actuel dans la bonne direction.
+        Interface de compatibilité — trouve la zone la plus proche du prix.
 
         Args:
-            zones: Liste des zones actives.
+            zones: Liste d'OBMultiTimeframe.
             prix_actuel: Prix courant.
-            direction: "BULL" pour chercher des zones de support, "BEAR" pour résistance.
+            direction: "BULL" ou "BEAR".
 
         Returns:
-            Zone la plus pertinente, ou None.
+            Zone la plus proche ou None.
         """
-        candidates = []
+        candidats = []
         for zone in zones:
-            if direction == "BULL" and zone.est_haussier and prix_actuel >= zone.prix_bas:
-                distance = prix_actuel - zone.milieu
-                if distance >= 0:
-                    candidates.append((distance, zone))
-            elif direction == "BEAR" and not zone.est_haussier and prix_actuel <= zone.prix_haut:
-                distance = zone.milieu - prix_actuel
-                if distance >= 0:
-                    candidates.append((distance, zone))
+            est_haussier = zone.type_ob == TypeOB.HAUSSIER
+            if direction == "BULL" and est_haussier:
+                if prix_actuel >= zone.zone_entree_bas:
+                    distance = abs(prix_actuel - zone.zone_entree_milieu)
+                    candidats.append((distance, zone))
+            elif direction == "BEAR" and not est_haussier:
+                if prix_actuel <= zone.zone_entree_haut:
+                    distance = abs(prix_actuel - zone.zone_entree_milieu)
+                    candidats.append((distance, zone))
 
-        if not candidates:
+        if not candidats:
             return None
+        candidats.sort(key=lambda x: x[0])
+        return candidats[0][1]
 
-        # Retourner la zone la plus proche (distance minimale)
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1]
+    def _detecter_tous_ob_bruts(self, df: pd.DataFrame) -> list:
+        """
+        Méthode de compatibilité — détecte tous les OB bruts sur H4 (sans scoring).
+        Utilisée par les tests unitaires de test_structure.py.
+
+        Args:
+            df: DataFrame H4.
+
+        Returns:
+            Liste de ZoneOB brutes.
+        """
+        df_atr = self._ajouter_atr(df)
+        return self._detecter_sur_timeframe(df_atr, "H4")
+
+    @staticmethod
+    def _score_vers_force(score: int) -> ForceOB:
+        """Convertit un score numérique en catégorie de force."""
+        if score >= 80:
+            return ForceOB.INSTITUTIONNEL
+        elif score >= 60:
+            return ForceOB.FORT
+        elif score >= 40:
+            return ForceOB.MODERE
+        return ForceOB.FAIBLE

@@ -12,7 +12,8 @@ from loguru import logger
 
 from config import CONFIG
 from structure_analyzer import AnalyseurStructure, AnalyseStructure, Tendance, TypeBOS
-from ob_detector import DetecteurOB, ZoneInstitutionnelle, TypeZone
+from ob_detector import DetecteurOB, OBMultiTimeframe, TypeOB, StatutOB
+from ob_visualizer import logger_resume_ob
 from indicators import Indicateurs
 from news_filter import FiltreNews
 from news_fetcher import RecuperateurCalendrier
@@ -30,13 +31,11 @@ class SignalTrading:
     """Résultat de l'évaluation du setup SMC."""
     direction: DirectionSignal
     valide: bool
-    zone_reference: Optional[ZoneInstitutionnelle]
+    zone_reference: Optional[OBMultiTimeframe]  # Nouveau : OBMultiTimeframe
     prix_entree_suggere: float = 0.0
     raison_rejet: str = ""
-    # Contexte pour le calcul SL/TP
     atr_m15: float = 0.0
-    # Score de confiance (0–100)
-    score_confiance: int = 0
+    score_confiance: int = 0  # Score OB (0–100)
 
 
 class StrategieSMC:
@@ -58,7 +57,7 @@ class StrategieSMC:
         self.analyseur_structure = AnalyseurStructure()
         self.detecteur_ob = DetecteurOB()
         self.filtre_news = filtre_news or FiltreNews(fetcher=RecuperateurCalendrier())
-        self.filtre_spread = filtre_spread  # None = pas de filtre spread (mode test)
+        self.filtre_spread = filtre_spread
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -137,42 +136,44 @@ class StrategieSMC:
         # ── Analyse de structure H4 ───────────────────────────────────────
         analyse = self.analyseur_structure.analyser(df_h4)
 
-        # ── Détection des zones H4 ────────────────────────────────────────
-        ob_actifs, breakers = self.detecteur_ob.detecter_toutes_zones(df_h4)
-        toutes_zones = ob_actifs + breakers
+        # ── Détection des OB multi-TF (H4 + H1 + M15) ────────────────────
+        # H4 est obligatoire — sans H4 l'OB est rejeté
+        # Seuls les OB score >= 60 (FORT/INSTITUTIONNEL) sont retournés
+        obs_mtf = self.detecteur_ob.detecter_multi_tf(df_h4, df_m15=df_m15)
+        logger_resume_ob(obs_mtf, float(df_m5["close"].iloc[-1]))
 
         # ── Calcul des indicateurs M15 ────────────────────────────────────
         rsi_m15 = Indicateurs.rsi(df_m15)
         atr_m15_serie = Indicateurs.atr(df_m15)
         atr_m15 = float(atr_m15_serie.iloc[-1]) if len(atr_m15_serie) > 0 else 0.0
-
         prix_actuel = float(df_m5["close"].iloc[-1])
 
         # ── Évaluation LONG ───────────────────────────────────────────────
-        signal_long = self._evaluer_long(
-            analyse, toutes_zones, df_m15, df_m5, rsi_m15, atr_m15, prix_actuel
+        signal_long = self._evaluer_long_mtf(
+            analyse, obs_mtf, df_m15, df_m5, rsi_m15, atr_m15, prix_actuel
         )
         if signal_long.valide:
             logger.info(
-                f"✅ SIGNAL LONG VALIDÉ | Zone: [{signal_long.zone_reference.prix_bas:.2f}"
-                f"–{signal_long.zone_reference.prix_haut:.2f}] | "
-                f"Confiance: {signal_long.score_confiance}/100"
+                f"✅ SIGNAL LONG VALIDÉ | "
+                f"Zone: [{signal_long.zone_reference.zone_entree_bas:.2f}"
+                f"–{signal_long.zone_reference.zone_entree_haut:.2f}] | "
+                f"Score OB: {signal_long.score_confiance}/100"
             )
             return signal_long
 
         # ── Évaluation SHORT ──────────────────────────────────────────────
-        signal_short = self._evaluer_short(
-            analyse, toutes_zones, df_m15, df_m5, rsi_m15, atr_m15, prix_actuel
+        signal_short = self._evaluer_short_mtf(
+            analyse, obs_mtf, df_m15, df_m5, rsi_m15, atr_m15, prix_actuel
         )
         if signal_short.valide:
             logger.info(
-                f"✅ SIGNAL SHORT VALIDÉ | Zone: [{signal_short.zone_reference.prix_bas:.2f}"
-                f"–{signal_short.zone_reference.prix_haut:.2f}] | "
-                f"Confiance: {signal_short.score_confiance}/100"
+                f"✅ SIGNAL SHORT VALIDÉ | "
+                f"Zone: [{signal_short.zone_reference.zone_entree_bas:.2f}"
+                f"–{signal_short.zone_reference.zone_entree_haut:.2f}] | "
+                f"Score OB: {signal_short.score_confiance}/100"
             )
             return signal_short
 
-        # Loguer la raison principale du rejet
         raison = signal_long.raison_rejet or signal_short.raison_rejet or "Conditions non réunies"
         logger.debug(f"Pas de signal | {raison}")
 
@@ -183,12 +184,199 @@ class StrategieSMC:
             raison_rejet=raison,
         )
 
-    # ── Évaluation LONG (5 conditions) ────────────────────────────────────
+    # ── Évaluation LONG multi-TF ──────────────────────────────────────────
+
+    def _evaluer_long_mtf(
+        self,
+        analyse: AnalyseStructure,
+        obs_mtf: List[OBMultiTimeframe],
+        df_m15: pd.DataFrame,
+        df_m5: pd.DataFrame,
+        rsi_m15: pd.Series,
+        atr_m15: float,
+        prix_actuel: float,
+    ) -> SignalTrading:
+        """
+        Évalue le signal LONG avec les nouveaux OB multi-TF.
+        Remplace _evaluer_long() en utilisant OBMultiTimeframe.
+        """
+        # Condition 1 : Structure H4 haussière
+        if analyse.tendance != Tendance.HAUSSIERE:
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet=f"Structure H4 non haussière ({analyse.tendance.value})",
+            )
+
+        if not analyse.derniere_cassure or analyse.derniere_cassure.type not in (
+            TypeBOS.BOS_HAUSSIER, TypeBOS.CHOCH_HAUSSIER
+        ):
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet="Pas de BOS haussier récent sur H4",
+            )
+
+        # Condition 2 : OB multi-TF haussier actif
+        obs_haussiers = [
+            ob for ob in obs_mtf
+            if ob.type_ob == TypeOB.HAUSSIER
+            and ob.statut not in (StatutOB.INVALIDE, StatutOB.EPUISE)
+        ]
+        if not obs_haussiers:
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet="Aucun OB haussier multi-TF valide (score ≥ 60)",
+            )
+
+        # Prendre le meilleur OB (score le plus élevé)
+        meilleur_ob = obs_haussiers[0]
+
+        # Condition 3 : Prix dans ou proche de la zone d'entrée
+        tolerance = prix_actuel * 0.005  # ±0.5%
+        dans_zone = (
+            meilleur_ob.zone_entree_bas - tolerance
+            <= prix_actuel
+            <= meilleur_ob.zone_entree_haut + tolerance
+        )
+        if not dans_zone:
+            distance_pct = abs(prix_actuel - meilleur_ob.zone_entree_milieu) / prix_actuel * 100
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet=f"Prix hors zone OB haussier ({distance_pct:.2f}% de distance)",
+            )
+
+        # Condition 4 : RSI M15 favorable
+        rsi_actuel = float(rsi_m15.iloc[-1])
+        if rsi_actuel >= CONFIG.RSI_SEUIL_LONG:
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet=f"RSI M15 trop élevé: {rsi_actuel:.1f} ≥ {CONFIG.RSI_SEUIL_LONG}",
+            )
+
+        # Condition 5 : Bougie de rejet M15
+        idx_m15 = len(df_m15) - 2
+        if not Indicateurs.bougie_rejet_haussiere(df_m15, idx_m15):
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet="Pas de bougie de rejet haussière sur M15",
+            )
+
+        # Condition 6 : Déclencheur M5
+        idx_m5 = len(df_m5) - 2
+        high_rejet_m15 = df_m15["high"].iloc[idx_m15]
+        if df_m5["close"].iloc[idx_m5] <= high_rejet_m15:
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet="M5 ne casse pas le high du rejet M15",
+            )
+
+        if not Indicateurs.volume_superieur_moyenne(df_m5, idx_m5):
+            return SignalTrading(
+                direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                raison_rejet="Volume M5 insuffisant",
+            )
+
+        return SignalTrading(
+            direction=DirectionSignal.LONG,
+            valide=True,
+            zone_reference=meilleur_ob,
+            prix_entree_suggere=float(df_m5["close"].iloc[-1]),
+            atr_m15=atr_m15,
+            score_confiance=meilleur_ob.score,
+        )
+
+    def _evaluer_short_mtf(
+        self,
+        analyse: AnalyseStructure,
+        obs_mtf: List[OBMultiTimeframe],
+        df_m15: pd.DataFrame,
+        df_m5: pd.DataFrame,
+        rsi_m15: pd.Series,
+        atr_m15: float,
+        prix_actuel: float,
+    ) -> SignalTrading:
+        """Évalue le signal SHORT avec les nouveaux OB multi-TF (symétrique au LONG)."""
+        if analyse.tendance != Tendance.BAISSIERE:
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet=f"Structure H4 non baissière ({analyse.tendance.value})",
+            )
+
+        if not analyse.derniere_cassure or analyse.derniere_cassure.type not in (
+            TypeBOS.BOS_BAISSIER, TypeBOS.CHOCH_BAISSIER
+        ):
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet="Pas de BOS baissier récent sur H4",
+            )
+
+        obs_baissiers = [
+            ob for ob in obs_mtf
+            if ob.type_ob == TypeOB.BAISSIER
+            and ob.statut not in (StatutOB.INVALIDE, StatutOB.EPUISE)
+        ]
+        if not obs_baissiers:
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet="Aucun OB baissier multi-TF valide (score ≥ 60)",
+            )
+
+        meilleur_ob = obs_baissiers[0]
+        tolerance = prix_actuel * 0.005
+        dans_zone = (
+            meilleur_ob.zone_entree_bas - tolerance
+            <= prix_actuel
+            <= meilleur_ob.zone_entree_haut + tolerance
+        )
+        if not dans_zone:
+            distance_pct = abs(prix_actuel - meilleur_ob.zone_entree_milieu) / prix_actuel * 100
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet=f"Prix hors zone OB baissier ({distance_pct:.2f}% de distance)",
+            )
+
+        rsi_actuel = float(rsi_m15.iloc[-1])
+        if rsi_actuel <= CONFIG.RSI_SEUIL_SHORT:
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet=f"RSI M15 trop bas: {rsi_actuel:.1f} ≤ {CONFIG.RSI_SEUIL_SHORT}",
+            )
+
+        idx_m15 = len(df_m15) - 2
+        if not Indicateurs.bougie_rejet_baissiere(df_m15, idx_m15):
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet="Pas de bougie de rejet baissière sur M15",
+            )
+
+        idx_m5 = len(df_m5) - 2
+        low_rejet_m15 = df_m15["low"].iloc[idx_m15]
+        if df_m5["close"].iloc[idx_m5] >= low_rejet_m15:
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet="M5 ne casse pas le low du rejet M15",
+            )
+
+        if not Indicateurs.volume_superieur_moyenne(df_m5, idx_m5):
+            return SignalTrading(
+                direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                raison_rejet="Volume M5 insuffisant",
+            )
+
+        return SignalTrading(
+            direction=DirectionSignal.SHORT,
+            valide=True,
+            zone_reference=meilleur_ob,
+            prix_entree_suggere=float(df_m5["close"].iloc[-1]),
+            atr_m15=atr_m15,
+            score_confiance=meilleur_ob.score,
+        )
+
+    # ── Évaluation LONG legacy (conservé pour compatibilité tests) ─────────
 
     def _evaluer_long(
         self,
         analyse: AnalyseStructure,
-        zones: List[ZoneInstitutionnelle],
+        zones: List[OBMultiTimeframe],
         df_m15: pd.DataFrame,
         df_m5: pd.DataFrame,
         rsi_m15: pd.Series,
@@ -333,7 +521,7 @@ class StrategieSMC:
     def _evaluer_short(
         self,
         analyse: AnalyseStructure,
-        zones: List[ZoneInstitutionnelle],
+        zones: List[OBMultiTimeframe],
         df_m15: pd.DataFrame,
         df_m5: pd.DataFrame,
         rsi_m15: pd.Series,
@@ -473,20 +661,15 @@ class StrategieSMC:
         df_h4: pd.DataFrame,
         df_m15: pd.DataFrame,
         direction: str,
-        zone_reference: ZoneInstitutionnelle,
+        zone_reference,  # OBMultiTimeframe ou ZoneOB
     ) -> Tuple[bool, str]:
         """
-        Vérifie si une position ouverte doit être fermée prématurément (invalidation).
+        Vérifie si une position ouverte doit être fermée prématurément.
+        Compatible avec OBMultiTimeframe (nouveau) et ZoneOB.
 
-        Conditions d'invalidation :
+        Conditions :
         1. BOS contraire sur H4
-        2. Clôture M15 sous l'OB de référence (LONG) ou au-dessus (SHORT)
-
-        Args:
-            df_h4: DataFrame H4 actuel.
-            df_m15: DataFrame M15 actuel.
-            direction: Direction de la position ("LONG" ou "SHORT").
-            zone_reference: Zone OB/BB de référence de l'entrée.
+        2. Clôture M15 sous/au-dessus de la zone de référence
 
         Returns:
             Tuple (invalide, raison).
@@ -494,24 +677,34 @@ class StrategieSMC:
         analyse = self.analyseur_structure.analyser(df_h4)
         close_m15 = float(df_m15["close"].iloc[-1])
 
+        # Extraire les bornes de la zone (compatible OBMultiTimeframe et ZoneOB)
+        if hasattr(zone_reference, "zone_entree_bas"):
+            # Nouveau format : OBMultiTimeframe
+            zone_bas = zone_reference.zone_entree_bas
+            zone_haut = zone_reference.zone_entree_haut
+        elif hasattr(zone_reference, "prix_bas"):
+            # Ancien format : ZoneInstitutionnelle / ZoneOB
+            zone_bas = zone_reference.prix_bas
+            zone_haut = zone_reference.prix_haut
+        elif hasattr(zone_reference, "zone_bas"):
+            zone_bas = zone_reference.zone_bas
+            zone_haut = zone_reference.zone_haut
+        else:
+            return False, ""
+
         if direction == "LONG":
-            # BOS baissier sur H4 = invalidation
             if analyse.derniere_cassure and analyse.derniere_cassure.type in (
                 TypeBOS.BOS_BAISSIER, TypeBOS.CHOCH_BAISSIER
             ):
                 return True, "BOS baissier H4 détecté — thèse invalidée"
-
-            # Clôture M15 sous l'OB
-            if close_m15 < zone_reference.prix_bas:
-                return True, f"Clôture M15 ({close_m15:.2f}) sous l'OB ({zone_reference.prix_bas:.2f})"
-
+            if close_m15 < zone_bas:
+                return True, f"Clôture M15 ({close_m15:.2f}) sous l'OB ({zone_bas:.2f})"
         else:  # SHORT
             if analyse.derniere_cassure and analyse.derniere_cassure.type in (
                 TypeBOS.BOS_HAUSSIER, TypeBOS.CHOCH_HAUSSIER
             ):
                 return True, "BOS haussier H4 détecté — thèse invalidée"
-
-            if close_m15 > zone_reference.prix_haut:
-                return True, f"Clôture M15 ({close_m15:.2f}) au-dessus de l'OB ({zone_reference.prix_haut:.2f})"
+            if close_m15 > zone_haut:
+                return True, f"Clôture M15 ({close_m15:.2f}) au-dessus de l'OB ({zone_haut:.2f})"
 
         return False, ""

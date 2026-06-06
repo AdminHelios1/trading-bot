@@ -159,19 +159,20 @@ class TestInvalidationPosition:
 
     def test_invalidation_long_par_bos_baissier(self):
         """Une position LONG doit être invalidée par un BOS baissier sur H4."""
-        from ob_detector import ZoneInstitutionnelle, TypeZone
+        from ob_detector import OBMultiTimeframe, TypeOB, ZoneOB
         import pandas as pd
 
-        # Créer une structure qui génère un BOS baissier
         df_h4 = creer_df_tendance_baissiere(n=100)
         df_m15 = creer_df_tendance_baissiere(n=60, prix_depart=float(df_h4["close"].iloc[-1]))
 
-        zone_ref = ZoneInstitutionnelle(
-            type=TypeZone.ORDER_BLOCK_HAUSSIER,
-            prix_bas=float(df_m15["close"].iloc[-1]) - 20,
-            prix_haut=float(df_m15["close"].iloc[-1]) - 15,
-            timestamp=df_h4.index[50],
-            index_bougie=50,
+        prix_actuel = float(df_m15["close"].iloc[-1])
+        zone_ref = OBMultiTimeframe(
+            type_ob=TypeOB.HAUSSIER,
+            symbole="XAUUSD",
+            zone_entree_bas=prix_actuel - 20,
+            zone_entree_haut=prix_actuel - 15,
+            zone_entree_milieu=prix_actuel - 17.5,
+            niveau_invalidation=prix_actuel - 22,
         )
 
         invalide, raison = self.strategie.position_invalidee(
@@ -180,26 +181,25 @@ class TestInvalidationPosition:
             direction="LONG",
             zone_reference=zone_ref,
         )
-        # Le résultat peut varier selon la structure générée, mais ne doit pas lever d'exception
         assert isinstance(invalide, bool)
         assert isinstance(raison, str)
 
     def test_invalidation_long_close_sous_ob(self):
         """Position LONG invalidée si le prix clôture sous l'OB."""
-        from ob_detector import ZoneInstitutionnelle, TypeZone
+        from ob_detector import OBMultiTimeframe, TypeOB
         import pandas as pd
 
         df_h4 = creer_df_tendance_haussiere(n=80)
         df_m15 = creer_df_m15_avec_rejet_haussier(n=60)
 
-        # Mettre l'OB au-dessus du prix actuel → close M15 < prix_ob_bas
         prix_actuel = float(df_m15["close"].iloc[-1])
-        zone_ref = ZoneInstitutionnelle(
-            type=TypeZone.ORDER_BLOCK_HAUSSIER,
-            prix_bas=prix_actuel + 50,   # OB au-dessus du prix actuel
-            prix_haut=prix_actuel + 55,
-            timestamp=df_h4.index[50],
-            index_bougie=50,
+        zone_ref = OBMultiTimeframe(
+            type_ob=TypeOB.HAUSSIER,
+            symbole="XAUUSD",
+            zone_entree_bas=prix_actuel + 50,
+            zone_entree_haut=prix_actuel + 55,
+            zone_entree_milieu=prix_actuel + 52.5,
+            niveau_invalidation=prix_actuel + 48,
         )
 
         invalide, raison = self.strategie.position_invalidee(
