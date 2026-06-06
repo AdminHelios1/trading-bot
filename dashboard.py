@@ -101,6 +101,27 @@ class Dashboard:
             "news_prochaine": "—",
             "news_derniere_maj": "—",
             "news_calendar_frais": True,
+            # Pyramiding
+            "pyramiding_enabled": True,
+            "pyramiding_addon_actif": False,
+            "pyramiding_addon_id": None,
+            "pyramiding_addon_statut": "—",
+            "pyramiding_addon_direction": "—",
+            "pyramiding_addon_lots": 0.0,
+            "pyramiding_addon_entry": 0.0,
+            "pyramiding_addon_sl": 0.0,
+            "pyramiding_addon_tp1": 0.0,
+            "pyramiding_addon_tp2": 0.0,
+            "pyramiding_addon_tp1_atteint": False,
+            "pyramiding_addon_trailing_actif": False,
+            "pyramiding_addon_trailing_prix": None,
+            "pyramiding_addon_pnl_realise": 0.0,
+            "pyramiding_addon_pnl_flottant": 0.0,
+            "pyramiding_addon_mfe": 0.0,
+            "pyramiding_raison_annulation": "",
+            "pyramiding_stats_ouverts": 0,
+            "pyramiding_stats_gagnants": 0,
+            "pyramiding_stats_pnl": 0.0,
         }
 
     def demarrer(self) -> None:
@@ -674,6 +695,142 @@ class Dashboard:
 
         return Panel(table, title="🌅 DAILY BIAS XAUUSD", border_style=couleur_bord)
 
+    def _construire_panel_pyramiding(self) -> Panel:
+        """Panneau pyramiding add-on."""
+        e = self._etat
+
+        if not e.get("pyramiding_enabled", True):
+            contenu = Text("Désactivé (PYRAMIDING_ENABLED=False)", style="dim italic")
+            return Panel(contenu, title="🔺 PYRAMIDING", border_style="dim")
+
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=22)
+        table.add_column("Valeur", width=35)
+
+        addon_actif = e.get("pyramiding_addon_actif", False)
+        addon_id = e.get("pyramiding_addon_id")
+        statut_str = e.get("pyramiding_addon_statut", "—")
+
+        if not addon_actif and not addon_id:
+            # Aucun add-on sur ce trade
+            raison = e.get("pyramiding_raison_annulation", "")
+            if raison:
+                table.add_row(
+                    "Statut",
+                    Text(f"⚪ Non ouvert — {raison}", style="dim")
+                )
+            else:
+                table.add_row("Statut", Text("⏳ En attente TP1 du trade principal", style="dim"))
+        else:
+            # Add-on ouvert ou fermé
+            tp1_atteint = e.get("pyramiding_addon_tp1_atteint", False)
+            trailing_actif = e.get("pyramiding_addon_trailing_actif", False)
+            trailing_prix = e.get("pyramiding_addon_trailing_prix")
+
+            if "OUVERT" in statut_str:
+                phase_str = (
+                    "Phase 2 (TP1 atteint) ✅" if tp1_atteint
+                    else "Phase 1 (attente TP1)"
+                )
+                couleur_statut = "bold green"
+                emoji_statut = "✅"
+            elif "GAGNANT" in statut_str:
+                phase_str = "Fermé en profit"
+                couleur_statut = "green"
+                emoji_statut = "🟢"
+            elif "BREAKEVEN" in statut_str:
+                phase_str = "Fermé au breakeven"
+                couleur_statut = "dim"
+                emoji_statut = "⚪"
+            else:
+                phase_str = statut_str
+                couleur_statut = "red"
+                emoji_statut = "🔴"
+
+            table.add_row(
+                "Statut",
+                Text(f"{emoji_statut} {phase_str}", style=couleur_statut)
+            )
+
+            direction = e.get("pyramiding_addon_direction", "—")
+            lots = e.get("pyramiding_addon_lots", 0.0)
+            entry = e.get("pyramiding_addon_entry", 0.0)
+            couleur_dir = "green" if "bullish" in direction.lower() else "red"
+            emoji_dir = "🟢" if "bullish" in direction.lower() else "🔴"
+            table.add_row(
+                "Direction",
+                Text(
+                    f"{emoji_dir} {direction.upper()} {lots} lots @ {entry:.2f}",
+                    style=f"bold {couleur_dir}"
+                )
+            )
+
+            sl = e.get("pyramiding_addon_sl", 0.0)
+            table.add_row("SL add-on (BE)", f"{sl:.2f}")
+
+            tp1 = e.get("pyramiding_addon_tp1", 0.0)
+            table.add_row(
+                "TP1 add-on (50%)",
+                Text(
+                    f"✅ ATTEINT @ {tp1:.2f}" if tp1_atteint else f"⏳ {tp1:.2f}",
+                    style="green" if tp1_atteint else "dim"
+                )
+            )
+
+            tp2 = e.get("pyramiding_addon_tp2", 0.0)
+            table.add_row("TP2 add-on (50%)", Text(f"⏳ {tp2:.2f}", style="dim"))
+
+            if trailing_actif and trailing_prix:
+                table.add_row(
+                    "Trailing stop",
+                    Text(f"✅ Actif @ {trailing_prix:.2f}", style="yellow")
+                )
+
+            pnl_real = e.get("pyramiding_addon_pnl_realise", 0.0)
+            pnl_flot = e.get("pyramiding_addon_pnl_flottant", 0.0)
+            mfe = e.get("pyramiding_addon_mfe", 0.0)
+
+            couleur_real = "green" if pnl_real >= 0 else "dim"
+            signe_real = "+" if pnl_real >= 0 else ""
+            table.add_row(
+                "P&L réalisé",
+                Text(f"{signe_real}${pnl_real:.2f}", style=couleur_real)
+            )
+
+            couleur_flot = "green" if pnl_flot >= 0 else "red"
+            signe_flot = "+" if pnl_flot >= 0 else ""
+            table.add_row(
+                "P&L flottant",
+                Text(f"{signe_flot}${pnl_flot:.2f}", style=couleur_flot)
+            )
+            if mfe > 0:
+                table.add_row("MFE add-on", f"{mfe:.2f}R")
+
+        # Ligne de séparation + stats session
+        nb = e.get("pyramiding_stats_ouverts", 0)
+        gagnants = e.get("pyramiding_stats_gagnants", 0)
+        pnl_session = e.get("pyramiding_stats_pnl", 0.0)
+
+        if nb > 0:
+            wr = gagnants / nb * 100
+            signe_pnl = "+" if pnl_session >= 0 else ""
+            couleur_pnl = "green" if pnl_session >= 0 else "red"
+            table.add_row(
+                "Stats session",
+                Text(
+                    f"{nb} add-ons | {gagnants} gagnants | "
+                    f"WR : {wr:.0f}% | P&L : {signe_pnl}${pnl_session:.2f}",
+                    style=couleur_pnl
+                )
+            )
+        else:
+            table.add_row("Stats session", Text("Aucun add-on cette session", style="dim"))
+
+        # Couleur du bord selon l'état
+        couleur_bord = "green" if addon_actif else "dim"
+        titre = f"🔺 PYRAMIDING ADD-ON [{addon_id}]" if addon_id else "🔺 PYRAMIDING"
+        return Panel(table, title=titre, border_style=couleur_bord)
+
     def _construire_layout(self) -> Panel:
         """Assemble tous les panneaux en un layout complet."""
         e = self._etat
@@ -710,7 +867,7 @@ class Dashboard:
         )
         layout.add_row(
             self._construire_panel_daily_bias(),
-            Text(""),
+            self._construire_panel_pyramiding(),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))

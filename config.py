@@ -130,6 +130,14 @@ class Config:
     BACKTEST_CAPITAL_INITIAL: float = 10_000.0
     BACKTEST_CSV_CACHE: str = "reports/cache_ohlcv_{symbole}_{tf}.csv"
 
+    # ── Pyramiding ────────────────────────────────────────────────────────
+    PYRAMIDING_ENABLED: bool = True           # Activer/désactiver le pyramiding
+    ADDON_RISQUE_PCT: float = 0.5             # % du capital risqué sur l'add-on (jamais >0.5%)
+    ADDON_MAX_PAR_TRADE: int = 1              # Maximum 1 add-on par trade (absolu)
+    ADDON_SCORE_OB_MIN: int = 60              # Score OB minimum pour déclencher l'add-on
+    ADDON_MAGIC_NUMBER: int = 20250102        # Magic number distinct du trade principal (20250101)
+    ADDON_TRAILING_ATR_MULT: float = 1.5      # Multiplicateur ATR pour trailing de l'add-on
+
     # ── Rapport ────────────────────────────────────────────────────────────
     RAPPORT_CSV: str = "reports/backtest_{symbole}_{date}.csv"
     RAPPORT_PNG: str = "reports/equity_curve_{symbole}.png"

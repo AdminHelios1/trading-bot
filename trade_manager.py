@@ -127,6 +127,7 @@ class GestionnairePositions:
         self._trade_actif: Optional[TradeGere] = None
         self._position_tracker = None
         self._partial_closer = None
+        self.pyramiding_manager = None  # Injecté depuis main.py si PYRAMIDING_ENABLED
 
     def _init_sous_modules(self) -> None:
         """Initialise les sous-modules au premier usage (lazy init)."""
@@ -257,6 +258,17 @@ class GestionnairePositions:
                 self._maj_trailing(trade, prix, df_m15)
 
         self._sauvegarder(trade)
+
+        # ── Mise à jour de l'add-on pyramiding si actif ───────────────────
+        if (CONFIG.PYRAMIDING_ENABLED
+                and self.pyramiding_manager is not None
+                and self._trade_actif is not None  # peut avoir changé si fermé
+                and not self._trade_actif.est_ferme):
+            try:
+                self.pyramiding_manager.update(self._trade_actif, df_m15)
+            except Exception as e:
+                logger.error(f"Erreur pyramiding.update : {e}")
+
         return tickets_fermes
 
     def fermer_position_invalidation(self, ticket: int, raison: str) -> bool:
@@ -328,7 +340,7 @@ class GestionnairePositions:
     # ── Gestion des phases ─────────────────────────────────────────────────
 
     def _gerer_tp1(self, trade: TradeGere, prix: float, df_m15) -> None:
-        """TP1 → fermer 50%, SL au breakeven."""
+        """TP1 → fermer 50%, SL au breakeven, évaluer le pyramiding."""
         logger.info(f"🎯 TP1 @ {prix:.2f} — fermeture 50%")
 
         if not self._fermer_partiel(trade, trade.tp1, prix):
@@ -345,6 +357,20 @@ class GestionnairePositions:
             f"Restant: {trade.lots_restants} lots | "
             f"P&L réalisé: +${trade.pnl_realise_usd:.2f}"
         )
+
+        # ── Pyramiding : évaluer et éventuellement ouvrir un add-on ──────
+        if (CONFIG.PYRAMIDING_ENABLED
+                and self.pyramiding_manager is not None):
+            try:
+                addon = self.pyramiding_manager.on_tp1_reached(trade)
+                if addon:
+                    logger.info(
+                        f"🔺 Pyramiding activé — add-on [{addon.addon_id}] ouvert"
+                    )
+                else:
+                    logger.debug("Pyramiding évalué — conditions non remplies")
+            except Exception as e:
+                logger.error(f"Erreur pyramiding.on_tp1_reached : {e}")
 
     def _gerer_tp2(self, trade: TradeGere, prix: float, df_m15) -> None:
         """TP2 → fermer 25%, SL à 1R de gain, activer trailing."""
