@@ -31,6 +31,8 @@ from backtest import Backtester
 from news_filter import FiltreNews
 from news_fetcher import RecuperateurCalendrier
 from news_scheduler import demarrer_scheduler_news, arreter_scheduler_news
+from spread_monitor import MoniteurSpread
+from spread_filter import FiltreSpread
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -131,8 +133,38 @@ def boucle_principale(mode: str) -> None:
         f"Prochaine: {status_news['prochaine_news']}"
     )
 
+    # ── Jobs scheduler pour le spread ─────────────────────────────────────
+    if scheduler_news is not None:
+        try:
+            # Enregistrement du spread toutes les 60 secondes
+            scheduler_news.add_job(
+                func=moniteur_spread.enregistrer_spread_actuel,
+                trigger="interval",
+                seconds=60,
+                id="enregistrement_spread",
+                name="Enregistrement spread XAUUSD",
+                replace_existing=True,
+            )
+            # Sauvegarde de l'historique toutes les heures
+            scheduler_news.add_job(
+                func=moniteur_spread.sauvegarder_historique,
+                trigger="interval",
+                hours=1,
+                id="sauvegarde_historique_spread",
+                name="Sauvegarde historique spread",
+                replace_existing=True,
+            )
+            logger.info("Jobs spread ajoutés au scheduler")
+        except Exception as e:
+            logger.warning(f"Impossible d'ajouter les jobs spread au scheduler : {e}")
+
+    # ── Initialisation du filtre spread ──────────────────────────────────
+    moniteur_spread = MoniteurSpread(connecteur=connecteur)
+    filtre_spread = FiltreSpread(moniteur=moniteur_spread, connecteur=connecteur)
+    logger.info("Filtre spread initialisé")
+
     # Injecter le filtre dans la stratégie
-    strategie = StrategieSMC(filtre_news=filtre_news)
+    strategie = StrategieSMC(filtre_news=filtre_news, filtre_spread=filtre_spread)
 
     # Initialiser la session
     info_compte = connecteur.get_info_compte()
@@ -339,6 +371,23 @@ def boucle_principale(mode: str) -> None:
                 dashboard.mettre_a_jour(
                     tendance_h4=analyse.tendance.value,
                     dernier_bos=texte_bos,
+                )
+            except Exception:
+                pass
+
+            # Mettre à jour le panneau spread dans le dashboard
+            try:
+                status_spread = filtre_spread.get_status()
+                dashboard.mettre_a_jour(
+                    spread_tradeable=status_spread["tradeable"],
+                    spread_raison_blocage=status_spread["raison_blocage"],
+                    spread_actuel=status_spread["spread_actuel"],
+                    spread_moyen_50min=status_spread["spread_moyen_50min"],
+                    spread_min_24h=status_spread.get("spread_min_24h"),
+                    spread_max_24h=status_spread.get("spread_max_24h"),
+                    spread_heure_min=status_spread.get("heure_min", "—"),
+                    spread_heure_max=status_spread.get("heure_max", "—"),
+                    spread_hard_cap=status_spread["hard_cap"],
                 )
             except Exception:
                 pass

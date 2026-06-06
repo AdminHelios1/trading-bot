@@ -83,6 +83,21 @@ class Config:
     TP2_RR: float = 2.5                   # TP2 à 2.5R (objectif principal)
     TP3_RR: float = 3.0                   # TP3 optionnel si structure favorable
 
+    # ── Spread XAUUSD ─────────────────────────────────────────────────────
+    SPREAD_HARD_CAP_POINTS: float = 35.0       # Jamais trader au-dessus (absolu)
+    SPREAD_DYNAMIC_MULTIPLIER: float = 2.5     # Bloquer si spread > 2.5× la moyenne
+    SPREAD_AVERAGE_WINDOW_MIN: int = 50        # Fenêtre calcul spread moyen (minutes)
+    SPREAD_MIN_HISTORY_SAMPLES: int = 10       # Min samples avant filtre dynamique actif
+    SPREAD_HISTORY_MAX_MB: float = 5.0         # Taille max du fichier historique spread
+    SPREAD_HISTORY_RETENTION_DAYS: int = 7     # Rétention de l'historique spread
+
+    # ── Périodes dangereuses XAUUSD (spread explosif connu) ───────────────
+    # Définies dans spread_filter.py — référencées ici pour documentation
+
+    # ── Volatilité ATR ────────────────────────────────────────────────────
+    ATR_MIN_RATIO: float = 0.50   # Bloquer si ATR < 50% de la moyenne 50b (trop calme)
+    ATR_MAX_RATIO: float = 3.0    # Bloquer si ATR > 3× la moyenne (panique)
+
     # ── Boucle principale ──────────────────────────────────────────────────
     INTERVALLE_BOUCLE_SECONDES: int = 60   # Vérification toutes les 60s
     MAX_TENTATIVES_CONNEXION: int = 3       # Retry connexion MT5

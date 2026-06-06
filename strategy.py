@@ -16,6 +16,7 @@ from ob_detector import DetecteurOB, ZoneInstitutionnelle, TypeZone
 from indicators import Indicateurs
 from news_filter import FiltreNews
 from news_fetcher import RecuperateurCalendrier
+from spread_filter import FiltreSpread
 
 
 class DirectionSignal(Enum):
@@ -44,14 +45,20 @@ class StrategieSMC:
     Conditions TOUTES requises simultanément pour valider un signal.
     """
 
-    def __init__(self, filtre_news: Optional[FiltreNews] = None) -> None:
+    def __init__(
+        self,
+        filtre_news: Optional[FiltreNews] = None,
+        filtre_spread: Optional[FiltreSpread] = None,
+    ) -> None:
         """
         Args:
-            filtre_news: Instance FiltreNews injectée (optionnel — crée la sienne si None).
+            filtre_news: Instance FiltreNews injectée (optionnel).
+            filtre_spread: Instance FiltreSpread injectée (optionnel).
         """
         self.analyseur_structure = AnalyseurStructure()
         self.detecteur_ob = DetecteurOB()
         self.filtre_news = filtre_news or FiltreNews(fetcher=RecuperateurCalendrier())
+        self.filtre_spread = filtre_spread  # None = pas de filtre spread (mode test)
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -85,8 +92,16 @@ class StrategieSMC:
                 raison_rejet="Hors session de trading",
             )
 
-        # ── Filtre news : PREMIÈRE vérification (économise le CPU si bloqué) ──
-        # Fenêtres : CRITIQUE 45min avant/90min après | STANDARD 30min avant/60min après
+        # ── Ordre d'évaluation des filtres (du moins coûteux au plus coûteux) ──
+        # 1. Session (déjà vérifié ci-dessus)
+        # 2. News (lookup dict)
+        # 3. Spread / hard cap (lecture symbol_info)
+        # 4. ATR volatilité (lecture OHLCV + calcul) — intégré dans filtre_spread
+        # 5. Structure H4 (calcul lourd)
+        # 6. Order Blocks (calcul lourd)
+        # 7. Confirmation M15/M5 (calcul lourd)
+
+        # ── Filtre news ────────────────────────────────────────────────────
         news_ok, raison_news = self.filtre_news.is_trading_allowed(
             datetime.now(timezone.utc)
         )
@@ -97,6 +112,19 @@ class StrategieSMC:
                 zone_reference=None,
                 raison_rejet=f"⛔ NEWS: {raison_news}",
             )
+
+        # ── Filtre spread + volatilité ATR ────────────────────────────────
+        if self.filtre_spread is not None:
+            spread_ok, raison_spread = self.filtre_spread.is_market_tradeable(
+                datetime.now(timezone.utc)
+            )
+            if not spread_ok:
+                return SignalTrading(
+                    direction=DirectionSignal.AUCUN,
+                    valide=False,
+                    zone_reference=None,
+                    raison_rejet=f"⛔ SPREAD: {raison_spread}",
+                )
 
         if not Indicateurs.atr_volatilite_suffisante(df_h4):
             return SignalTrading(

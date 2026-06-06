@@ -52,6 +52,16 @@ class Dashboard:
             "circuit_breaker": False,
             "bot_arrete": False,
             "derniere_mise_a_jour": "",
+            # Filtre spread
+            "spread_tradeable": True,
+            "spread_raison_blocage": "",
+            "spread_actuel": 0.0,
+            "spread_moyen_50min": 0.0,
+            "spread_min_24h": None,
+            "spread_max_24h": None,
+            "spread_heure_min": "—",
+            "spread_heure_max": "—",
+            "spread_hard_cap": 35.0,
             # Filtre news
             "news_trading_autorise": True,
             "news_raison_blocage": "",
@@ -229,6 +239,60 @@ class Dashboard:
         couleur_bordure = "red" if not e["news_trading_autorise"] else "magenta"
         return Panel(table, title="📰 FILTRE NEWS", border_style=couleur_bordure)
 
+    def _construire_panel_spread(self) -> Panel:
+        """Panneau affichant le spread actuel et la volatilité."""
+        e = self._etat
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=18)
+        table.add_column("Valeur", width=35)
+
+        # Spread actuel vs hard cap
+        spread_act = e["spread_actuel"]
+        hard_cap = e["spread_hard_cap"]
+        if spread_act > hard_cap:
+            spread_text = Text(f"🔴 {spread_act:.0f} pts — HARD CAP DÉPASSÉ", style="bold red")
+        elif spread_act > hard_cap * 0.7:
+            spread_text = Text(f"⚠️  {spread_act:.0f} pts (limite: {hard_cap:.0f} pts)", style="yellow")
+        else:
+            spread_text = Text(f"{spread_act:.0f} pts  ✅ (limite: {hard_cap:.0f} pts)", style="green")
+        table.add_row("Spread actuel", spread_text)
+
+        # Spread moyen et ratio
+        moy = e["spread_moyen_50min"]
+        if moy > 0 and spread_act > 0:
+            ratio = spread_act / moy
+            table.add_row("Spread moy 50min", f"{moy:.0f} pts  (ratio: {ratio:.1f}×)")
+        else:
+            table.add_row("Spread moy 50min", f"{moy:.0f} pts")
+
+        # Min/Max 24h
+        if e["spread_min_24h"] is not None:
+            table.add_row(
+                "Spread min 24h",
+                f"{e['spread_min_24h']:.0f} pts  ({e['spread_heure_min']})"
+            )
+        if e["spread_max_24h"] is not None:
+            couleur_max = "yellow" if e["spread_max_24h"] > hard_cap else "dim"
+            table.add_row(
+                "Spread max 24h",
+                Text(
+                    f"{e['spread_max_24h']:.0f} pts  ({e['spread_heure_max']})"
+                    + ("  ⚠️" if e["spread_max_24h"] > hard_cap else ""),
+                    style=couleur_max
+                )
+            )
+
+        # Statut global
+        if e["spread_tradeable"]:
+            statut = Text("✅ Tradeable", style="bold green")
+        else:
+            raison = e["spread_raison_blocage"][:30] + "..." if len(e["spread_raison_blocage"]) > 30 else e["spread_raison_blocage"]
+            statut = Text(f"🔴 {raison}", style="bold red")
+        table.add_row("Statut", statut)
+
+        couleur_bord = "red" if not e["spread_tradeable"] else "blue"
+        return Panel(table, title="📡 SPREAD & VOLATILITÉ", border_style=couleur_bord)
+
     def _construire_panel_stats(self) -> Panel:
         """Panneau affichant les statistiques du jour et globales."""
         e = self._etat
@@ -295,7 +359,7 @@ class Dashboard:
         )
         layout.add_row(
             self._construire_panel_news(),
-            Text(""),  # Colonne vide pour équilibrer
+            self._construire_panel_spread(),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))
