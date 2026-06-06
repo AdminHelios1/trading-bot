@@ -14,6 +14,7 @@ from config import CONFIG
 from structure_analyzer import AnalyseurStructure, AnalyseStructure, Tendance, TypeBOS
 from ob_detector import DetecteurOB, ZoneInstitutionnelle, TypeZone
 from indicators import Indicateurs
+from news_filter import FiltreNews
 
 
 class DirectionSignal(Enum):
@@ -45,6 +46,8 @@ class StrategieSMC:
     def __init__(self) -> None:
         self.analyseur_structure = AnalyseurStructure()
         self.detecteur_ob = DetecteurOB()
+        self.filtre_news = FiltreNews()
+        self.filtre_news.charger_annonces()
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -76,6 +79,19 @@ class StrategieSMC:
                 valide=False,
                 zone_reference=None,
                 raison_rejet="Hors session de trading",
+            )
+
+        # ── Filtre news : bloquer 30 min avant/après annonce High Impact ──
+        from datetime import datetime, timezone
+        news_ok, raison_news = self.filtre_news.trading_autorise(
+            datetime.now(timezone.utc)
+        )
+        if not news_ok:
+            return SignalTrading(
+                direction=DirectionSignal.AUCUN,
+                valide=False,
+                zone_reference=None,
+                raison_rejet=f"⛔ NEWS: {raison_news}",
             )
 
         if not Indicateurs.atr_volatilite_suffisante(df_h4):
