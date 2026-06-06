@@ -58,6 +58,17 @@ class Dashboard:
             "circuit_breaker": False,
             "bot_arrete": False,
             "derniere_mise_a_jour": "",
+            # Daily Bias
+            "biais_calcule": False,
+            "biais_direction": "NON CALCULÉ",
+            "biais_force": "—",
+            "biais_score_h": 0,
+            "biais_score_b": 0,
+            "biais_facteurs": [],
+            "biais_session_asie_haut": None,
+            "biais_session_asie_bas": None,
+            "biais_range_compresse": False,
+            "biais_no_trade_raisons": [],
             # Circuit Breaker
             "cb_niveau": "AUCUN",
             "cb_raison": "",
@@ -599,6 +610,70 @@ class Dashboard:
             border_style=couleur_bord
         )
 
+    def _construire_panel_daily_bias(self) -> Panel:
+        """Panneau Daily Bias et session asiatique."""
+        e = self._etat
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=20)
+        table.add_column("Valeur", width=36)
+
+        if not e.get("biais_calcule"):
+            table.add_row("Statut", Text("⏳ Non encore calculé (avant 07h15 UTC)", style="dim"))
+            return Panel(table, title="🌅 DAILY BIAS", border_style="dim")
+
+        direction = e.get("biais_direction", "?")
+        force     = e.get("biais_force", "?")
+        score_h   = e.get("biais_score_h", 0)
+        score_b   = e.get("biais_score_b", 0)
+
+        if "BULLISH" in direction:
+            couleur_dir = "bold green"
+            emoji_dir   = "📈"
+        elif "BEARISH" in direction:
+            couleur_dir = "bold red"
+            emoji_dir   = "📉"
+        elif "NO_TRADE" in direction:
+            couleur_dir = "bold red"
+            emoji_dir   = "⛔"
+        else:
+            couleur_dir = "yellow"
+            emoji_dir   = "⏸️ "
+
+        table.add_row("Direction", Text(f"{emoji_dir} {direction} [{force}]", style=couleur_dir))
+        table.add_row("Score", f"Bull: {score_h}/9  Bear: {score_b}/9")
+
+        # Facteurs
+        for f in e.get("biais_facteurs", []):
+            icone = "✅" if f.get("direction") != "neutral" else "⚪"
+            nom   = f.get("nom", "?")[:16]
+            desc  = f.get("description", "")[:28]
+            table.add_row(f"  {icone} {nom}", Text(desc, style="dim"))
+
+        # Session asiatique
+        haut_asie = e.get("biais_session_asie_haut")
+        bas_asie  = e.get("biais_session_asie_bas")
+        if haut_asie and bas_asie:
+            range_str = f"{haut_asie:.2f} – {bas_asie:.2f}"
+            compresse = e.get("biais_range_compresse", False)
+            table.add_row(
+                "Range Asie",
+                Text(
+                    f"{range_str}  {'(COMPRESSÉ ⚠️)' if compresse else ''}",
+                    style="yellow" if compresse else "dim"
+                )
+            )
+
+        # Raisons NO_TRADE
+        for raison in e.get("biais_no_trade_raisons", []):
+            table.add_row("⛔ NO_TRADE", Text(raison[:35], style="red"))
+
+        couleur_bord = {
+            "BULLISH": "green", "BEARISH": "red",
+            "NO_TRADE": "red", "NEUTRE": "yellow",
+        }.get(direction, "cyan")
+
+        return Panel(table, title="🌅 DAILY BIAS XAUUSD", border_style=couleur_bord)
+
     def _construire_layout(self) -> Panel:
         """Assemble tous les panneaux en un layout complet."""
         e = self._etat
@@ -632,6 +707,10 @@ class Dashboard:
         layout.add_row(
             self._construire_panel_ob(),
             self._construire_panel_circuit_breaker(),
+        )
+        layout.add_row(
+            self._construire_panel_daily_bias(),
+            Text(""),
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))

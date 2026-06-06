@@ -49,6 +49,7 @@ class StrategieSMC:
         filtre_news: Optional[FiltreNews] = None,
         filtre_spread: Optional[FiltreSpread] = None,
         circuit_breaker=None,
+        analyseur_biais=None,
     ) -> None:
         """
         Args:
@@ -61,7 +62,8 @@ class StrategieSMC:
         self.filtre_news = filtre_news or FiltreNews(fetcher=RecuperateurCalendrier())
         self.filtre_spread = filtre_spread
         self.circuit_breaker = circuit_breaker
-        self._dernier_multiplicateur_risk: float = 1.0  # Transmis au risk_manager
+        self.analyseur_biais = analyseur_biais   # AnalyseurBiaisJournalier optionnel
+        self._dernier_multiplicateur_risk: float = 1.0
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -189,6 +191,15 @@ class StrategieSMC:
         atr_m15 = float(atr_m15_serie.iloc[-1]) if len(atr_m15_serie) > 0 else 0.0
         prix_actuel = float(df_m5["close"].iloc[-1])
 
+        # ── Filtre Daily Bias (après OB, avant confirmation M15) ──────────
+        # Recalculer si nouveau jour et heure >= 07h15 UTC
+        if self.analyseur_biais is not None:
+            if self.analyseur_biais.necessite_recalcul() and heure_utc >= 7:
+                try:
+                    self.analyseur_biais.calculer()
+                except Exception as e:
+                    logger.debug(f"Calcul biais échoué : {e}")
+
         # ── Évaluation LONG ───────────────────────────────────────────────
         signal_long = self._evaluer_long_mtf(
             analyse, obs_mtf, df_m15, df_m5, rsi_m15, atr_m15, prix_actuel
@@ -285,6 +296,20 @@ class StrategieSMC:
                 raison_rejet=f"Prix hors zone OB haussier ({distance_pct:.2f}% de distance)",
             )
 
+        # Condition 4b : Filtre Daily Bias
+        if self.analyseur_biais is not None:
+            biais_ok, raison_biais = self.analyseur_biais.signal_aligne_avec_biais("bullish")
+            if not biais_ok:
+                # Exception : OB INSTITUTIONNEL score >= 80 avec biais MODÉRÉ
+                score_ob = meilleur_ob.score if meilleur_ob else 0
+                if score_ob < 80:
+                    return SignalTrading(
+                        direction=DirectionSignal.LONG, valide=False, zone_reference=None,
+                        raison_rejet=f"⛔ BIAIS: {raison_biais}",
+                    )
+                else:
+                    logger.info(f"OB INSTITUTIONNEL (score={score_ob}) — exception biais MODÉRÉ")
+
         # Condition 4 : RSI M15 favorable
         rsi_actuel = float(rsi_m15.iloc[-1])
         if rsi_actuel >= CONFIG.RSI_SEUIL_LONG:
@@ -374,6 +399,17 @@ class StrategieSMC:
                 direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
                 raison_rejet=f"Prix hors zone OB baissier ({distance_pct:.2f}% de distance)",
             )
+
+        # Filtre Daily Bias SHORT
+        if self.analyseur_biais is not None:
+            biais_ok_s, raison_biais_s = self.analyseur_biais.signal_aligne_avec_biais("bearish")
+            if not biais_ok_s:
+                score_ob_s = meilleur_ob.score if meilleur_ob else 0
+                if score_ob_s < 80:
+                    return SignalTrading(
+                        direction=DirectionSignal.SHORT, valide=False, zone_reference=None,
+                        raison_rejet=f"⛔ BIAIS: {raison_biais_s}",
+                    )
 
         rsi_actuel = float(rsi_m15.iloc[-1])
         if rsi_actuel <= CONFIG.RSI_SEUIL_SHORT:
