@@ -235,41 +235,112 @@ class Dashboard:
         return Panel(table, title="📊 STRUCTURE H4", border_style="cyan")
 
     def _construire_panel_positions(self) -> Panel:
-        """Panneau affichant les positions ouvertes."""
+        """Panneau trade actif avec gestion 3 phases."""
         positions = self._etat["positions"]
 
         if not positions:
             contenu = Text("Aucune position ouverte", style="dim italic")
-            return Panel(contenu, title="📈 POSITIONS", border_style="green")
+            return Panel(contenu, title="💼 TRADE ACTIF", border_style="green")
 
-        table = Table(box=box.SIMPLE, show_header=True, header_style="bold")
-        table.add_column("Direction", width=8)
-        table.add_column("Volume", width=8)
-        table.add_column("Entrée", width=10)
-        table.add_column("SL", width=10)
-        table.add_column("TP2", width=10)
-        table.add_column("P&L", width=12)
-        table.add_column("R actuel", width=8)
-        table.add_column("TP1", width=5)
+        pos = positions[0]  # Un seul trade à la fois
+        couleur = "green" if pos["direction"] == "LONG" else "red"
+        id_trade = pos.get("id_trade", "?")
 
-        for pos in positions:
-            couleur = "green" if pos["direction"] == "LONG" else "red"
-            profit = pos["profit"]
-            couleur_pnl = "green" if profit >= 0 else "red"
-            signe = "+" if profit >= 0 else ""
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=18)
+        table.add_column("Valeur", width=38)
 
-            table.add_row(
-                Text(pos["direction"], style=f"bold {couleur}"),
-                f"{pos['volume']:.2f}",
-                f"{pos['prix_entree']:.3f}",
-                f"{pos['sl']:.3f}",
-                f"{pos['tp2']:.3f}",
-                Text(f"{signe}{profit:.2f}", style=couleur_pnl),
-                f"{pos['r_actuel']:.2f}R",
-                "✅" if pos["tp1_atteint"] else "⏳",
+        # Infos de base
+        table.add_row(
+            "Direction",
+            Text(
+                f"{'🟢' if pos['direction'] == 'LONG' else '🔴'} "
+                f"{pos['direction']} {pos['symbole']}",
+                style=f"bold {couleur}"
             )
+        )
+        table.add_row("Entrée", f"{pos['prix_entree']:.3f}")
 
-        return Panel(table, title="📈 POSITIONS OUVERTES", border_style="green")
+        # Phase actuelle
+        phase = pos.get("phase", "?")
+        phase_emoji = {"PHASE_1_ATTENTE_TP1": "⏳", "PHASE_2_TP1_ATTEINT": "✅",
+                       "PHASE_3_TP2_ATTEINT": "🎯", "FERMÉ": "🔒"}.get(phase, "?")
+        table.add_row("Phase", Text(f"{phase_emoji} {phase}", style="bold cyan"))
+
+        # Niveaux SL/Trailing
+        sl = pos.get("sl", 0.0)
+        trailing = pos.get("trailing_prix")
+        sl_label = pos.get("phase", "")
+        if "PHASE_3" in sl_label:
+            sl_annot = "🔒 verrouillé à +1R"
+        elif "PHASE_2" in sl_label:
+            sl_annot = "🔒 breakeven"
+        else:
+            sl_annot = "initial"
+        table.add_row("Stop Loss", f"{sl:.3f}  ({sl_annot})")
+        if trailing:
+            table.add_row("Trailing Stop", Text(f"{trailing:.3f}  (actif)", style="yellow"))
+
+        # TP niveaux
+        tp1_atteint = pos.get("tp1_atteint", False)
+        tp2_atteint = pos.get("tp2_atteint", False)
+        tp1_p = pos.get("tp1_prix", 0.0)
+        tp2_p = pos.get("tp2_prix", 0.0)
+        tp3_p = pos.get("tp3_prix", 0.0)
+
+        table.add_row(
+            "TP1 (50% @ 1R)",
+            Text(
+                f"✅ ATTEINT @ {tp1_p:.2f}" if tp1_atteint
+                else f"⏳ {tp1_p:.2f}",
+                style="green" if tp1_atteint else "dim"
+            )
+        )
+        table.add_row(
+            "TP2 (25% @ 2R)",
+            Text(
+                f"✅ ATTEINT @ {tp2_p:.2f}" if tp2_atteint
+                else f"⏳ {tp2_p:.2f}",
+                style="green" if tp2_atteint else "dim"
+            )
+        )
+        table.add_row("TP3 (25% @ str.)", Text(f"⏳ {tp3_p:.2f}", style="dim"))
+
+        # P&L
+        pnl_r = pos.get("r_actuel", 0.0)
+        pnl_reel = pos.get("pnl_realise", 0.0)
+        pnl_float = pos.get("profit", 0.0)
+        pnl_total = pnl_reel + pnl_float
+        couleur_pnl = "green" if pnl_total >= 0 else "red"
+        signe = "+" if pnl_total >= 0 else ""
+
+        table.add_row("P&L réalisé", f"+${pnl_reel:.2f}  (TP1+TP2)")
+        table.add_row("P&L flottant", Text(f"{signe}${pnl_float:.2f}", style=couleur_pnl))
+        table.add_row(
+            "P&L total",
+            Text(f"{signe}${pnl_total:.2f}  ({pnl_r:+.2f}R)", style=f"bold {couleur_pnl}")
+        )
+        table.add_row(
+            "MFE / MAE",
+            f"MFE: {pos.get('mfe', 0):.2f}R  |  MAE: {pos.get('mae', 0):.2f}R"
+        )
+
+        # OB info
+        score = pos.get("ob_score", 0)
+        force = pos.get("ob_force", "—")
+        if score > 0:
+            table.add_row("OB Score", f"{score}/100 [{force}]")
+
+        confluences = pos.get("confluences", [])
+        if confluences:
+            table.add_row("Confluences", " | ".join(confluences[:3]))
+
+        couleur_bord = "green" if pnl_total >= 0 else "red"
+        return Panel(
+            table,
+            title=f"💼 TRADE ACTIF [{id_trade}]",
+            border_style=couleur_bord
+        )
 
     def _construire_panel_news(self) -> Panel:
         """Panneau affichant le statut du filtre news."""

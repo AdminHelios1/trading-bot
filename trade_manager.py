@@ -1,52 +1,150 @@
 """
-trade_manager.py — Suivi des trades ouverts, trailing stop, prises de profit partielles.
-Gère le cycle de vie complet d'une position depuis l'entrée jusqu'à la clôture.
+trade_manager.py — Gestion complète du cycle de vie des trades sur 3 niveaux.
+Phase 1 : TP1 @1R → SL au breakeven
+Phase 2 : TP2 @2R → SL à 1R (profit garanti)
+Phase 3 : TP3 @structure → trailing stop actif
+
+Résultat garanti si TP1+TP2 atteints puis TP3 revient au SL : +1.25R minimum.
 """
 
+import uuid
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
-import pandas as pd
+from datetime import datetime
+from enum import Enum
+from typing import Optional, List, Dict
 from loguru import logger
-
-import MetaTrader5 as mt5
 
 from config import CONFIG
 from indicators import Indicateurs
-from ob_detector import ZoneInstitutionnelle
+
+
+# ── Énumérations (définies AVANT les dataclasses) ─────────────────────────
+
+class PhaseTrade(Enum):
+    PHASE_1 = "PHASE_1_ATTENTE_TP1"
+    PHASE_2 = "PHASE_2_TP1_ATTEINT"
+    PHASE_3 = "PHASE_3_TP2_ATTEINT"
+    FERME   = "FERMÉ"
+
+
+class DirectionTrade(Enum):
+    LONG  = "LONG"
+    SHORT = "SHORT"
+
+
+class RaisonFermeture(Enum):
+    TP1_ATTEINT        = "TP1 atteint"
+    TP2_ATTEINT        = "TP2 atteint"
+    TP3_ATTEINT        = "TP3 atteint (structure)"
+    SL_TOUCHE          = "Stop Loss touché"
+    BREAKEVEN_TOUCHE   = "Breakeven touché"
+    TRAILING_DECLENCHE = "Trailing stop déclenché"
+    INVALIDATION       = "Invalidation de setup (structure H4)"
+    MANUEL             = "Fermeture manuelle"
+    DRAWDOWN_MAX       = "Drawdown max atteint"
+    FIN_SESSION        = "Fin de session"
+
+
+# ── Dataclasses ────────────────────────────────────────────────────────────
+
+@dataclass
+class NiveauPartiel:
+    """Définit un niveau de prise de profit partielle."""
+    id_niveau: int
+    multiple_r: float
+    prix: float
+    pct_position: float
+    lots: float
+    atteint: bool = False
+    heure_atteinte: Optional[datetime] = None
+    prix_atteint: Optional[float] = None
+    pnl_usd: Optional[float] = None
 
 
 @dataclass
-class EtatPosition:
-    """État complet d'une position ouverte gérée par le bot."""
-    ticket: int
-    symbole: str
-    direction: str           # "LONG" ou "SHORT"
-    volume_initial: float
-    volume_restant: float
-    prix_entree: float
-    sl_initial: float
-    sl_actuel: float
-    tp1: float
-    tp2: float
-    tp3: float
-    sl_distance: float       # Distance initiale SL en points
-    zone_reference: Optional[ZoneInstitutionnelle] = None
-    tp1_atteint: bool = False
-    breakeven_actif: bool = False
-    trailing_actif: bool = False
-    profit_max_r: float = 0.0   # Maximum de R atteint (pour le trailing)
+class NiveauSL:
+    """État du Stop Loss avec historique complet des déplacements."""
+    prix_actuel: float
+    prix_initial: float
+    est_breakeven: bool = False
+    est_a_1r: bool = False
+    est_trailing: bool = False
+    historique: List[Dict] = field(default_factory=list)
 
+
+@dataclass
+class TradeGere:
+    """Trade complet avec gestion multi-niveaux, persisté en JSON."""
+    id_trade: str
+    ticket_mt5: int
+    tickets_fermetures: List[int]
+    symbole: str
+    direction: DirectionTrade
+    prix_entree: float
+    heure_entree: datetime
+    lots_initial: float
+    lots_restants: float
+    sl: NiveauSL
+    tp1: NiveauPartiel
+    tp2: NiveauPartiel
+    tp3: NiveauPartiel
+    phase: PhaseTrade = PhaseTrade.PHASE_1
+    ob_score: int = 0
+    ob_force: str = ""
+    confluences: List[str] = field(default_factory=list)
+    trailing_actif: bool = False
+    trailing_prix: Optional[float] = None
+    trailing_distance_atr: float = 0.0
+    mfe: float = 0.0
+    mae: float = 0.0
+    pnl_realise_usd: float = 0.0
+    pnl_flottant_usd: float = 0.0
+    est_ferme: bool = False
+    raison_fermeture: Optional[RaisonFermeture] = None
+    heure_fermeture: Optional[datetime] = None
+    pnl_total_usd: Optional[float] = None
+    r_total_realise: Optional[float] = None
+
+    @property
+    def distance_risque(self) -> float:
+        """Distance initiale SL en prix = 1R."""
+        return abs(self.prix_entree - self.sl.prix_initial)
+
+    def est_long(self) -> bool:
+        return self.direction == DirectionTrade.LONG
+
+
+# ── Gestionnaire principal ─────────────────────────────────────────────────
 
 class GestionnairePositions:
-    """Gère toutes les positions ouvertes du bot."""
+    """
+    Gestion multi-niveaux des trades SMC (3 phases).
+    Interface compatible avec l'ancien code du bot.
+    """
 
-    def __init__(self, connecteur) -> None:
-        """
-        Args:
-            connecteur: Instance ConnecteurMT5.
-        """
+    def __init__(self, connecteur=None) -> None:
         self.connecteur = connecteur
-        self.positions: Dict[int, EtatPosition] = {}  # ticket → EtatPosition
+        self._trade_actif: Optional[TradeGere] = None
+        self._position_tracker = None
+        self._partial_closer = None
+
+    def _init_sous_modules(self) -> None:
+        """Initialise les sous-modules au premier usage (lazy init)."""
+        if self._position_tracker is None:
+            try:
+                from position_tracker import SuiveurPosition
+                self._position_tracker = SuiveurPosition()
+            except Exception as e:
+                logger.debug(f"SuiveurPosition non disponible : {e}")
+
+        if self._partial_closer is None and self.connecteur is not None:
+            try:
+                from partial_closer import FermeturePartielle
+                self._partial_closer = FermeturePartielle(self.connecteur)
+            except Exception as e:
+                logger.debug(f"FermeturePartielle non disponible : {e}")
+
+    # ── Interface publique ─────────────────────────────────────────────────
 
     def enregistrer_position(
         self,
@@ -60,212 +158,451 @@ class GestionnairePositions:
         tp2: float,
         tp3: float,
         sl_distance: float,
-        zone_reference: Optional[ZoneInstitutionnelle] = None,
+        zone_reference=None,
+        ob_score: int = 0,
+        ob_force: str = "",
+        confluences: Optional[List[str]] = None,
     ) -> None:
         """
-        Enregistre une nouvelle position dans le gestionnaire.
-
-        Args:
-            ticket: Numéro de ticket MT5.
-            symbole: Symbole de l'actif.
-            direction: "LONG" ou "SHORT".
-            volume: Volume initial du trade.
-            prix_entree: Prix d'entrée.
-            sl: Stop Loss initial.
-            tp1: Take Profit 1 (50% de la position).
-            tp2: Take Profit 2 (objectif principal).
-            tp3: Take Profit 3 (optionnel, si structure favorable).
-            sl_distance: Distance SL en points (pour calculer le R).
-            zone_reference: Zone OB/BB de référence.
+        Enregistre un nouveau trade avec gestion 3 niveaux.
+        Distribution automatique : 50% / 25% / 25%.
         """
-        self.positions[ticket] = EtatPosition(
-            ticket=ticket,
+        self._init_sous_modules()
+
+        direction_enum = (
+            DirectionTrade.LONG if direction == "LONG"
+            else DirectionTrade.SHORT
+        )
+
+        # Distribution des lots
+        lots_tp1 = round(volume * 0.50, 2)
+        lots_tp2 = round(volume * 0.25, 2)
+        lots_tp3 = max(0.01, round(volume - lots_tp1 - lots_tp2, 2))
+
+        trade = TradeGere(
+            id_trade=str(uuid.uuid4())[:8],
+            ticket_mt5=ticket,
+            tickets_fermetures=[],
             symbole=symbole,
-            direction=direction,
-            volume_initial=volume,
-            volume_restant=volume,
+            direction=direction_enum,
             prix_entree=prix_entree,
-            sl_initial=sl,
-            sl_actuel=sl,
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
-            sl_distance=sl_distance,
-            zone_reference=zone_reference,
-        )
-        logger.info(
-            f"Position enregistrée | Ticket: {ticket} | {direction} {volume} {symbole} "
-            f"@ {prix_entree:.5f} | SL: {sl:.5f} | TP1: {tp1:.5f} | TP2: {tp2:.5f}"
+            heure_entree=datetime.utcnow(),
+            lots_initial=volume,
+            lots_restants=volume,
+            sl=NiveauSL(prix_actuel=sl, prix_initial=sl),
+            tp1=NiveauPartiel(1, 1.0, tp1, 50.0, lots_tp1),
+            tp2=NiveauPartiel(2, 2.0, tp2, 25.0, lots_tp2),
+            tp3=NiveauPartiel(3, CONFIG.RR_CIBLE, tp3, 25.0, lots_tp3),
+            ob_score=ob_score,
+            ob_force=ob_force,
+            confluences=confluences or [],
         )
 
-    def gerer_positions(self, df_m15: pd.DataFrame) -> List[int]:
+        self._trade_actif = trade
+        self._sauvegarder(trade)
+
+        logger.success(
+            f"Trade [{trade.id_trade}] | {direction} {volume} lots {symbole} "
+            f"@ {prix_entree:.2f} | SL: {sl:.2f} | "
+            f"TP1: {tp1:.2f} | TP2: {tp2:.2f} | TP3: {tp3:.2f} | "
+            f"Lots: {lots_tp1}/{lots_tp2}/{lots_tp3}"
+        )
+
+    def gerer_positions(self, df_m15) -> List[int]:
         """
-        Gère toutes les positions ouvertes : trailing stop, prises de profit partielles.
-        À appeler à chaque nouvelle bougie M5 fermée.
-
-        Args:
-            df_m15: DataFrame M15 pour le calcul de l'ATR du trailing.
+        Gère le trade actif. Appelé à chaque nouvelle bougie M5/M15 fermée.
 
         Returns:
             Liste des tickets de positions fermées pendant cette itération.
         """
+        self._init_sous_modules()
+
+        if self._trade_actif is None or self._trade_actif.est_ferme:
+            return []
+
+        trade = self._trade_actif
+        prix = self._get_prix_actuel(trade.symbole, trade.direction)
+        if prix <= 0:
+            return []
+
+        self._maj_excursions(trade, prix)
+
         tickets_fermes = []
-        atr_m15 = float(Indicateurs.atr(df_m15).iloc[-1])
 
-        for ticket, pos in list(self.positions.items()):
-            # Récupérer les positions toujours ouvertes dans MT5
-            positions_mt5 = self.connecteur.get_positions_ouvertes(pos.symbole)
-            ticket_toujours_ouvert = any(p["ticket"] == ticket for p in positions_mt5)
+        if trade.phase == PhaseTrade.PHASE_1:
+            if self._tp1_atteint(trade, prix):
+                self._gerer_tp1(trade, prix, df_m15)
+            elif self._sl_touche(trade, prix):
+                self._fermer_tout(trade, RaisonFermeture.SL_TOUCHE, prix)
+                tickets_fermes.append(trade.ticket_mt5)
 
-            if not ticket_toujours_ouvert:
-                # Position fermée par SL ou TP dans MT5 → nettoyer
-                logger.info(f"Position {ticket} fermée par MT5 (SL/TP atteint)")
-                tickets_fermes.append(ticket)
-                del self.positions[ticket]
-                continue
+        elif trade.phase == PhaseTrade.PHASE_2:
+            if self._tp2_atteint(trade, prix):
+                self._gerer_tp2(trade, prix, df_m15)
+            elif self._sl_touche(trade, prix):
+                self._fermer_tout(trade, RaisonFermeture.BREAKEVEN_TOUCHE, prix)
+                tickets_fermes.append(trade.ticket_mt5)
 
-            # Prix courant
-            tick = self.connecteur.get_tick(pos.symbole)
-            if tick is None:
-                continue
-            prix_actuel = tick["bid"] if pos.direction == "LONG" else tick["ask"]
-
-            # Calculer le R actuel
-            if pos.sl_distance > 0:
-                if pos.direction == "LONG":
-                    r_actuel = (prix_actuel - pos.prix_entree) / pos.sl_distance
-                else:
-                    r_actuel = (pos.prix_entree - prix_actuel) / pos.sl_distance
-                pos.profit_max_r = max(pos.profit_max_r, r_actuel)
+        elif trade.phase == PhaseTrade.PHASE_3:
+            if self._tp3_atteint(trade, prix):
+                self._fermer_tout(trade, RaisonFermeture.TP3_ATTEINT, prix)
+                tickets_fermes.append(trade.ticket_mt5)
+            elif self._trailing_declenche(trade, prix):
+                self._fermer_tout(trade, RaisonFermeture.TRAILING_DECLENCHE, prix)
+                tickets_fermes.append(trade.ticket_mt5)
+            elif self._sl_touche(trade, prix):
+                self._fermer_tout(trade, RaisonFermeture.SL_TOUCHE, prix)
+                tickets_fermes.append(trade.ticket_mt5)
             else:
-                r_actuel = 0.0
+                self._maj_trailing(trade, prix, df_m15)
 
-            # ── Gestion TP1 (prise de profit partielle à 1R) ───────────────
-            if not pos.tp1_atteint:
-                tp1_atteint = (
-                    (pos.direction == "LONG" and prix_actuel >= pos.tp1)
-                    or (pos.direction == "SHORT" and prix_actuel <= pos.tp1)
-                )
-                if tp1_atteint:
-                    volume_partiel = round(pos.volume_initial * CONFIG.TP1_FRACTION, 2)
-                    type_pos = mt5.ORDER_TYPE_BUY if pos.direction == "LONG" else mt5.ORDER_TYPE_SELL
-                    succes = self.connecteur.fermer_position(
-                        ticket, pos.symbole, volume_partiel, type_pos
-                    )
-                    if succes:
-                        pos.tp1_atteint = True
-                        pos.volume_restant -= volume_partiel
-
-                        # Déplacer SL au breakeven
-                        nouveau_sl = pos.prix_entree
-                        if self.connecteur.modifier_position(ticket, nouveau_sl, pos.tp2):
-                            pos.sl_actuel = nouveau_sl
-                            pos.breakeven_actif = True
-                            logger.info(
-                                f"TP1 atteint {ticket} | Volume partiel fermé: {volume_partiel} | "
-                                f"SL déplacé au breakeven: {nouveau_sl:.5f}"
-                            )
-
-            # ── Trailing Stop (activé après 1R de gain) ────────────────────
-            if pos.tp1_atteint and r_actuel >= CONFIG.TRAILING_ACTIVATION_RR:
-                distance_trailing = atr_m15 * CONFIG.TRAILING_DISTANCE_ATR
-
-                if pos.direction == "LONG":
-                    nouveau_sl_trailing = prix_actuel - distance_trailing
-                    # Avancer le SL seulement (ne jamais reculer)
-                    if nouveau_sl_trailing > pos.sl_actuel:
-                        if self.connecteur.modifier_position(ticket, nouveau_sl_trailing, pos.tp2):
-                            ancien_sl = pos.sl_actuel
-                            pos.sl_actuel = nouveau_sl_trailing
-                            pos.trailing_actif = True
-                            logger.debug(
-                                f"Trailing LONG {ticket} | SL: {ancien_sl:.5f} → "
-                                f"{nouveau_sl_trailing:.5f} | R actuel: {r_actuel:.2f}"
-                            )
-                else:  # SHORT
-                    nouveau_sl_trailing = prix_actuel + distance_trailing
-                    # Reculer le SL seulement (ne jamais avancer pour un SHORT)
-                    if nouveau_sl_trailing < pos.sl_actuel:
-                        if self.connecteur.modifier_position(ticket, nouveau_sl_trailing, pos.tp2):
-                            ancien_sl = pos.sl_actuel
-                            pos.sl_actuel = nouveau_sl_trailing
-                            pos.trailing_actif = True
-                            logger.debug(
-                                f"Trailing SHORT {ticket} | SL: {ancien_sl:.5f} → "
-                                f"{nouveau_sl_trailing:.5f} | R actuel: {r_actuel:.2f}"
-                            )
-
+        self._sauvegarder(trade)
         return tickets_fermes
 
     def fermer_position_invalidation(self, ticket: int, raison: str) -> bool:
-        """
-        Ferme une position suite à une invalidation de la thèse du trade.
-
-        Args:
-            ticket: Ticket de la position à fermer.
-            raison: Raison textuelle de l'invalidation.
-
-        Returns:
-            True si fermeture réussie.
-        """
-        if ticket not in self.positions:
+        """Ferme une position suite à invalidation de setup."""
+        if self._trade_actif is None or self._trade_actif.ticket_mt5 != ticket:
             return False
-
-        pos = self.positions[ticket]
-        type_pos = mt5.ORDER_TYPE_BUY if pos.direction == "LONG" else mt5.ORDER_TYPE_SELL
-
-        succes = self.connecteur.fermer_position(
-            ticket, pos.symbole, pos.volume_restant, type_pos
+        prix = self._get_prix_actuel(
+            self._trade_actif.symbole, self._trade_actif.direction
         )
-        if succes:
-            logger.warning(
-                f"Position {ticket} fermée par invalidation | Raison: {raison}"
-            )
-            del self.positions[ticket]
-        return succes
-
-    def get_resume_positions(self) -> List[Dict]:
-        """Retourne un résumé des positions pour le dashboard."""
-        positions_mt5 = {}
-        for symbole in set(p.symbole for p in self.positions.values()):
-            for pos_mt5 in self.connecteur.get_positions_ouvertes(symbole):
-                positions_mt5[pos_mt5["ticket"]] = pos_mt5
-
-        resume = []
-        for ticket, pos in self.positions.items():
-            info_mt5 = positions_mt5.get(ticket, {})
-            profit = info_mt5.get("profit", 0.0)
-
-            r_actuel = 0.0
-            if pos.sl_distance > 0:
-                if pos.direction == "LONG":
-                    prix_ref = info_mt5.get("prix_entree", pos.prix_entree)
-                    prix_actuel_approx = prix_ref + profit / max(pos.volume_restant, 0.01)
-                    r_actuel = (prix_actuel_approx - pos.prix_entree) / pos.sl_distance
-                # Approximation simplifiée pour l'affichage dashboard
-
-            resume.append({
-                "ticket": ticket,
-                "symbole": pos.symbole,
-                "direction": pos.direction,
-                "volume": pos.volume_restant,
-                "prix_entree": pos.prix_entree,
-                "sl": pos.sl_actuel,
-                "tp2": pos.tp2,
-                "profit": profit,
-                "r_actuel": round(r_actuel, 2),
-                "tp1_atteint": pos.tp1_atteint,
-                "trailing_actif": pos.trailing_actif,
-            })
-        return resume
+        self._fermer_tout(self._trade_actif, RaisonFermeture.INVALIDATION, prix)
+        logger.warning(f"Position {ticket} fermée par invalidation : {raison}")
+        return True
 
     def a_position_ouverte(self, symbole: Optional[str] = None) -> bool:
         """Vérifie si une position est actuellement ouverte."""
+        if self._trade_actif is None or self._trade_actif.est_ferme:
+            return False
         if symbole:
-            return any(p.symbole == symbole for p in self.positions.values())
-        return len(self.positions) > 0
+            return self._trade_actif.symbole == symbole
+        return True
+
+    def get_resume_positions(self) -> List[Dict]:
+        """Résumé complet pour le dashboard."""
+        if self._trade_actif is None or self._trade_actif.est_ferme:
+            return []
+
+        trade = self._trade_actif
+        prix = self._get_prix_actuel(trade.symbole, trade.direction)
+        r_actuel = 0.0
+        if trade.distance_risque > 0 and prix > 0:
+            r_actuel = (
+                (prix - trade.prix_entree) / trade.distance_risque
+                if trade.est_long()
+                else (trade.prix_entree - prix) / trade.distance_risque
+            )
+
+        return [{
+            "ticket": trade.ticket_mt5,
+            "symbole": trade.symbole,
+            "direction": trade.direction.value,
+            "volume": trade.lots_restants,
+            "prix_entree": trade.prix_entree,
+            "sl": trade.sl.prix_actuel,
+            "tp2": trade.tp2.prix,
+            "profit": trade.pnl_flottant_usd,
+            "r_actuel": round(r_actuel, 2),
+            "tp1_atteint": trade.tp1.atteint,
+            "tp2_atteint": trade.tp2.atteint,
+            "trailing_actif": trade.trailing_actif,
+            "phase": trade.phase.value,
+            "ob_score": trade.ob_score,
+            "ob_force": trade.ob_force,
+            "confluences": trade.confluences,
+            "mfe": round(trade.mfe, 2),
+            "mae": round(trade.mae, 2),
+            "pnl_realise": round(trade.pnl_realise_usd, 2),
+            "tp1_prix": trade.tp1.prix,
+            "tp2_prix": trade.tp2.prix,
+            "tp3_prix": trade.tp3.prix,
+            "trailing_prix": trade.trailing_prix,
+            "id_trade": trade.id_trade,
+        }]
 
     def supprimer_position(self, ticket: int) -> None:
-        """Supprime une position du gestionnaire (après fermeture MT5)."""
-        if ticket in self.positions:
-            del self.positions[ticket]
+        """Marque une position comme fermée."""
+        if self._trade_actif and self._trade_actif.ticket_mt5 == ticket:
+            self._trade_actif.est_ferme = True
+
+    # ── Gestion des phases ─────────────────────────────────────────────────
+
+    def _gerer_tp1(self, trade: TradeGere, prix: float, df_m15) -> None:
+        """TP1 → fermer 50%, SL au breakeven."""
+        logger.info(f"🎯 TP1 @ {prix:.2f} — fermeture 50%")
+
+        if not self._fermer_partiel(trade, trade.tp1, prix):
+            logger.error("Fermeture partielle TP1 échouée — maintien Phase 1")
+            return
+
+        nouveau_sl = trade.prix_entree
+        if self._deplacer_sl(trade, nouveau_sl, "Breakeven après TP1"):
+            trade.sl.est_breakeven = True
+
+        trade.phase = PhaseTrade.PHASE_2
+        logger.success(
+            f"✅ Phase 2 | SL → BE @ {nouveau_sl:.2f} | "
+            f"Restant: {trade.lots_restants} lots | "
+            f"P&L réalisé: +${trade.pnl_realise_usd:.2f}"
+        )
+
+    def _gerer_tp2(self, trade: TradeGere, prix: float, df_m15) -> None:
+        """TP2 → fermer 25%, SL à 1R de gain, activer trailing."""
+        logger.info(f"🎯 TP2 @ {prix:.2f} — fermeture 25%")
+
+        if not self._fermer_partiel(trade, trade.tp2, prix):
+            logger.error("Fermeture partielle TP2 échouée — maintien Phase 2")
+            return
+
+        # SL à 1R de gain — verrouillage du profit minimum
+        nouveau_sl = (
+            trade.prix_entree + trade.distance_risque
+            if trade.est_long()
+            else trade.prix_entree - trade.distance_risque
+        )
+        if self._deplacer_sl(trade, nouveau_sl, "Verrouillage 1R après TP2"):
+            trade.sl.est_a_1r = True
+
+        # Trailing stop initial
+        atr = self._calculer_atr_m15(df_m15)
+        distance = atr * CONFIG.TRAILING_DISTANCE_ATR
+        trade.trailing_distance_atr = distance
+        trade.trailing_actif = True
+        trade.trailing_prix = (
+            prix - distance if trade.est_long()
+            else prix + distance
+        )
+
+        trade.phase = PhaseTrade.PHASE_3
+        logger.success(
+            f"✅ Phase 3 | SL → 1R @ {nouveau_sl:.2f} | "
+            f"Trailing @ {trade.trailing_prix:.2f} | "
+            f"Restant: {trade.lots_restants} lots | "
+            f"P&L réalisé: +${trade.pnl_realise_usd:.2f}"
+        )
+
+    def _maj_trailing(self, trade: TradeGere, prix: float, df_m15) -> None:
+        """Met à jour le trailing — ne peut que progresser en faveur."""
+        if not trade.trailing_actif or trade.trailing_prix is None:
+            return
+
+        atr = self._calculer_atr_m15(df_m15)
+        distance = atr * CONFIG.TRAILING_DISTANCE_ATR
+        trade.trailing_distance_atr = distance
+
+        if trade.est_long():
+            nouveau = prix - distance
+            if nouveau > trade.trailing_prix:
+                ancien = trade.trailing_prix
+                trade.trailing_prix = nouveau
+                logger.debug(f"Trailing ↑ : {ancien:.2f} → {nouveau:.2f}")
+        else:
+            nouveau = prix + distance
+            if nouveau < trade.trailing_prix:
+                ancien = trade.trailing_prix
+                trade.trailing_prix = nouveau
+                logger.debug(f"Trailing ↓ : {ancien:.2f} → {nouveau:.2f}")
+
+    # ── Conditions ────────────────────────────────────────────────────────
+
+    def _tp1_atteint(self, t: TradeGere, p: float) -> bool:
+        if t.tp1.atteint:
+            return False
+        return p >= t.tp1.prix if t.est_long() else p <= t.tp1.prix
+
+    def _tp2_atteint(self, t: TradeGere, p: float) -> bool:
+        if t.tp2.atteint:
+            return False
+        return p >= t.tp2.prix if t.est_long() else p <= t.tp2.prix
+
+    def _tp3_atteint(self, t: TradeGere, p: float) -> bool:
+        if t.tp3.atteint:
+            return False
+        return p >= t.tp3.prix if t.est_long() else p <= t.tp3.prix
+
+    def _sl_touche(self, t: TradeGere, p: float) -> bool:
+        return p <= t.sl.prix_actuel if t.est_long() else p >= t.sl.prix_actuel
+
+    def _trailing_declenche(self, t: TradeGere, p: float) -> bool:
+        if not t.trailing_actif or t.trailing_prix is None:
+            return False
+        return p <= t.trailing_prix if t.est_long() else p >= t.trailing_prix
+
+    # ── SL ───────────────────────────────────────────────────────────────
+
+    def _deplacer_sl(self, trade: TradeGere, nouveau_sl: float, raison: str) -> bool:
+        """
+        Déplace le SL. RÈGLE ABSOLUE : ne peut jamais reculer.
+        """
+        if trade.est_long() and nouveau_sl <= trade.sl.prix_actuel:
+            logger.warning(
+                f"SL refusé : {nouveau_sl:.2f} ≤ actuel {trade.sl.prix_actuel:.2f} (LONG)"
+            )
+            return False
+        if not trade.est_long() and nouveau_sl >= trade.sl.prix_actuel:
+            logger.warning(
+                f"SL refusé : {nouveau_sl:.2f} ≥ actuel {trade.sl.prix_actuel:.2f} (SHORT)"
+            )
+            return False
+
+        ancien = trade.sl.prix_actuel
+        succes = True
+
+        if self.connecteur is not None:
+            succes = self.connecteur.modifier_position(trade.ticket_mt5, nouveau_sl, 0.0)
+
+        if succes:
+            trade.sl.historique.append({
+                "heure": datetime.utcnow().isoformat(),
+                "de": ancien,
+                "vers": nouveau_sl,
+                "raison": raison,
+            })
+            trade.sl.prix_actuel = nouveau_sl
+            logger.info(f"SL : {ancien:.2f} → {nouveau_sl:.2f} | {raison}")
+        return succes
+
+    # ── Fermeture partielle ───────────────────────────────────────────────
+
+    def _fermer_partiel(
+        self,
+        trade: TradeGere,
+        niveau: NiveauPartiel,
+        prix: float,
+    ) -> bool:
+        """
+        Ferme partiellement. NE passe jamais à la phase suivante sans confirmation.
+        """
+        if niveau.atteint:
+            return False
+
+        if self._partial_closer is not None:
+            # Mode live avec MT5
+            return self._partial_closer.fermer_partiel(trade, niveau, prix)
+
+        # Mode paper / test
+        niveau.atteint = True
+        niveau.heure_atteinte = datetime.utcnow()
+        niveau.prix_atteint = prix
+        niveau.pnl_usd = self._calculer_pnl(trade, niveau.lots, prix)
+        trade.lots_restants = max(0.0, round(trade.lots_restants - niveau.lots, 2))
+        trade.pnl_realise_usd += niveau.pnl_usd or 0.0
+        return True
+
+    # ── Fermeture complète ────────────────────────────────────────────────
+
+    def _fermer_tout(
+        self,
+        trade: TradeGere,
+        raison: RaisonFermeture,
+        prix: float,
+    ) -> None:
+        """Ferme complètement la position restante."""
+        if trade.lots_restants > 0 and self.connecteur is not None:
+            import MetaTrader5 as mt5
+            type_fermeture = (
+                mt5.ORDER_TYPE_SELL if trade.est_long()
+                else mt5.ORDER_TYPE_BUY
+            )
+            self.connecteur.fermer_position(
+                trade.ticket_mt5, trade.symbole,
+                trade.lots_restants, type_fermeture
+            )
+
+        pnl_final = self._calculer_pnl(trade, trade.lots_restants, prix)
+        trade.pnl_realise_usd += pnl_final
+        trade.lots_restants = 0.0
+        trade.est_ferme = True
+        trade.raison_fermeture = raison
+        trade.heure_fermeture = datetime.utcnow()
+        trade.phase = PhaseTrade.FERME
+        trade.pnl_total_usd = trade.pnl_realise_usd
+
+        risque_usd = trade.distance_risque * trade.lots_initial * 100.0
+        trade.r_total_realise = (
+            trade.pnl_total_usd / risque_usd if risque_usd > 0 else 0.0
+        )
+
+        self._logger_fermeture(trade)
+
+        try:
+            if self._position_tracker:
+                self._position_tracker.archiver(trade)
+        except Exception:
+            pass
+
+        self._trade_actif = None
+
+    # ── Utilitaires ───────────────────────────────────────────────────────
+
+    def _maj_excursions(self, trade: TradeGere, prix: float) -> None:
+        """MFE et MAE en R."""
+        if trade.distance_risque <= 0:
+            return
+        if trade.est_long():
+            favorable = (prix - trade.prix_entree) / trade.distance_risque
+            adverse = (trade.prix_entree - prix) / trade.distance_risque
+        else:
+            favorable = (trade.prix_entree - prix) / trade.distance_risque
+            adverse = (prix - trade.prix_entree) / trade.distance_risque
+
+        trade.mfe = max(trade.mfe, favorable)
+        trade.mae = max(trade.mae, max(0.0, adverse))
+
+    def _calculer_pnl(self, trade: TradeGere, lots: float, prix: float) -> float:
+        """P&L USD d'une tranche. XAUUSD : 1 lot ≈ 100$/$ de mouvement."""
+        if lots <= 0:
+            return 0.0
+        diff = (
+            prix - trade.prix_entree if trade.est_long()
+            else trade.prix_entree - prix
+        )
+        return round(diff * lots * 100.0, 2)
+
+    def _calculer_atr_m15(self, df_m15) -> float:
+        """ATR M15 sur la bougie fermée."""
+        try:
+            serie = Indicateurs.atr(df_m15, CONFIG.ATR_PERIODE)
+            return float(serie.iloc[-2]) if len(serie) >= 2 else 5.0
+        except Exception:
+            return 5.0
+
+    def _get_prix_actuel(self, symbole: str, direction: DirectionTrade) -> float:
+        """Prix courant bid (LONG) ou ask (SHORT)."""
+        if self.connecteur is None:
+            return 0.0
+        try:
+            tick = self.connecteur.get_tick(symbole)
+            if tick is None:
+                return 0.0
+            return tick["bid"] if direction == DirectionTrade.LONG else tick["ask"]
+        except Exception:
+            return 0.0
+
+    def _sauvegarder(self, trade: TradeGere) -> None:
+        """Persiste l'état du trade."""
+        try:
+            if self._position_tracker:
+                self._position_tracker.sauvegarder(trade)
+        except Exception:
+            pass
+
+    def _logger_fermeture(self, trade: TradeGere) -> None:
+        """Log complet de la clôture."""
+        phases = []
+        if trade.tp1.atteint:
+            phases.append("TP1(+1R×50%)")
+        if trade.tp2.atteint:
+            phases.append("TP2(+2R×25%)")
+        if trade.tp3.atteint:
+            phases.append(f"TP3(+{trade.tp3.multiple_r:.1f}R×25%)")
+
+        emoji = "🟢" if (trade.pnl_total_usd or 0) > 0 else "🔴"
+        logger.info(
+            f"{emoji} Trade [{trade.id_trade}] | "
+            f"{trade.raison_fermeture.value if trade.raison_fermeture else '?'} | "
+            f"R: {trade.r_total_realise:+.2f}R | "
+            f"P&L: ${trade.pnl_total_usd:+.2f} | "
+            f"Phases: {' → '.join(phases) or 'Aucune'} | "
+            f"MFE: {trade.mfe:.2f}R | MAE: {trade.mae:.2f}R"
+        )
