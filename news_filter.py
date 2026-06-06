@@ -1,234 +1,360 @@
 """
-news_filter.py — Filtre automatique des annonces économiques haute importance.
-Source : Forex Factory JSON (gratuit, sans clé API).
-Bloque le trading 30 minutes avant et 30 minutes après chaque annonce High Impact.
+news_filter.py — Logique de blocage du trading autour des annonces économiques.
+Deux niveaux : événements CRITIQUES pour XAUUSD et événements HIGH standard.
+Ne lève jamais d'exception vers l'appelant — retourne toujours (bool, str).
 """
 
-import json
-import time
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from loguru import logger
 
-try:
-    import requests
-    REQUESTS_DISPONIBLE = True
-except ImportError:
-    REQUESTS_DISPONIBLE = False
+from news_fetcher import RecuperateurCalendrier, EvenementNews
 
 
-# ── Constantes ─────────────────────────────────────────────────────────────
-CACHE_FICHIER = Path("reports/news_cache.json")
-CACHE_DUREE_HEURES = 12   # Rafraîchir le cache toutes les 12h
-MARGE_AVANT_MINUTES = 30  # Bloquer 30 min avant l'annonce
-MARGE_APRES_MINUTES = 30  # Bloquer 30 min après l'annonce
+# ── Événements CRITIQUES pour XAUUSD ──────────────────────────────────────
+# Ces événements créent des mouvements extrêmes sur l'or.
+# Fenêtre de blocage étendue : 45 min avant / 90 min après.
+EVENEMENTS_CRITIQUES_XAUUSD = {
+    "non-farm payrolls",
+    "nfp",
+    "fed interest rate decision",
+    "federal reserve interest rate decision",
+    "fomc statement",
+    "fomc meeting minutes",
+    "fed press conference",
+    "fed chair speech",
+    "powell speech",
+    "cpi m/m",
+    "core cpi m/m",
+    "cpi y/y",
+    "core cpi y/y",
+    "gdp q/q",
+    "advance gdp q/q",
+    "preliminary gdp q/q",
+    "ism manufacturing pmi",
+    "jackson hole symposium",
+    "us holiday",
+}
 
-# Devises à surveiller pour XAUUSD
-DEVISES_SURVEILLEES = {"USD", "EUR", "GBP"}
+# Fenêtres de blocage en minutes
+BLOCAGE_CRITIQUE_AVANT_MIN = 45
+BLOCAGE_CRITIQUE_APRES_MIN = 90
+BLOCAGE_STANDARD_AVANT_MIN = 30
+BLOCAGE_STANDARD_APRES_MIN = 60
 
-# URL Forex Factory JSON (format non officiel mais stable)
-FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-
-
-@dataclass_style = None  # éviter l'import dataclass pour compatibilité
-
-
-class Annonce:
-    """Une annonce économique du calendrier."""
-    def __init__(self, titre: str, devise: str, impact: str, timestamp_utc: datetime) -> None:
-        self.titre = titre
-        self.devise = devise
-        self.impact = impact  # "High", "Medium", "Low"
-        self.timestamp_utc = timestamp_utc
-
-    def __repr__(self) -> str:
-        return f"{self.timestamp_utc.strftime('%H:%M UTC')} [{self.impact}] {self.devise} — {self.titre}"
+# Âge maximum du calendrier avant de considérer comme périmé
+MAX_AGE_CACHE_HEURES = 48
 
 
 class FiltreNews:
     """
-    Vérifie si le trading est autorisé selon le calendrier économique.
-    Bloque automatiquement les fenêtres autour des annonces High Impact.
+    Filtre de trading basé sur le calendrier économique.
+
+    Interface principale : is_trading_allowed(datetime) -> (bool, str)
+    Ne lève JAMAIS d'exception — fail-safe = bloquer le trading.
     """
 
-    def __init__(self) -> None:
-        self.annonces: List[Annonce] = []
-        self.derniere_maj: float = 0.0
-        CACHE_FICHIER.parent.mkdir(exist_ok=True)
-
-    def charger_annonces(self, forcer: bool = False) -> bool:
+    def __init__(
+        self,
+        fetcher: Optional[RecuperateurCalendrier] = None,
+        evenements: Optional[List[EvenementNews]] = None,
+    ) -> None:
         """
-        Charge les annonces de la semaine depuis Forex Factory ou le cache local.
-
         Args:
-            forcer: Forcer le rechargement même si le cache est frais.
+            fetcher: Instance de RecuperateurCalendrier (injection de dépendance).
+            evenements: Liste d'événements pré-chargés (pour les tests).
+        """
+        self._fetcher = fetcher or RecuperateurCalendrier()
+        self._evenements: List[EvenementNews] = evenements or []
+        self._timestamp_derniere_maj: Optional[datetime] = None
+        self._source_active: str = "non_initialisé"
+
+    # ── Chargement ────────────────────────────────────────────────────────
+
+    def force_refresh(self) -> bool:
+        """
+        Force le rechargement immédiat du calendrier depuis toutes les sources.
 
         Returns:
-            True si les annonces sont chargées avec succès.
+            True si au moins une source a fourni des données.
         """
-        maintenant = time.time()
-        cache_age_heures = (maintenant - self.derniere_maj) / 3600
+        try:
+            evenements = self._fetcher.recuperer_calendrier()
+            self._evenements = evenements
+            self._timestamp_derniere_maj = datetime.utcnow()
 
-        # Utiliser le cache si récent
-        if not forcer and cache_age_heures < CACHE_DUREE_HEURES and self.annonces:
-            return True
-
-        # Essayer de charger depuis Forex Factory
-        if REQUESTS_DISPONIBLE:
-            try:
-                resp = requests.get(FF_URL, timeout=10, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"
-                })
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self.annonces = self._parser_annonces(data)
-                    self.derniere_maj = maintenant
-                    # Sauvegarder le cache
-                    with open(CACHE_FICHIER, "w") as f:
-                        json.dump(data, f)
-                    logger.info(
-                        f"Calendrier économique chargé: {len(self.annonces)} annonces "
-                        f"({sum(1 for a in self.annonces if a.impact == 'High')} High Impact)"
-                    )
-                    return True
-            except Exception as e:
-                logger.warning(f"Impossible de charger le calendrier FF: {e}")
-
-        # Essayer le cache local
-        if CACHE_FICHIER.exists():
-            try:
-                with open(CACHE_FICHIER) as f:
-                    data = json.load(f)
-                self.annonces = self._parser_annonces(data)
-                self.derniere_maj = maintenant
-                logger.warning("Calendrier chargé depuis le cache local (peut être ancien)")
+            if evenements:
+                self._source_active = evenements[0].source if evenements else "vide"
+                logger.info(
+                    f"Calendrier news rechargé : {len(evenements)} events "
+                    f"(source: {self._source_active})"
+                )
                 return True
-            except Exception as e:
-                logger.error(f"Erreur lecture cache news: {e}")
+            else:
+                self._source_active = "vide"
+                logger.warning("Calendrier news vide après rechargement")
+                return False
 
-        logger.warning("Filtre news inactif — aucune donnée de calendrier disponible")
-        return False
+        except Exception as e:
+            logger.error(f"Erreur lors du rechargement du calendrier : {e}")
+            return False
 
-    def _parser_annonces(self, data: list) -> List[Annonce]:
-        """
-        Parse les données JSON de Forex Factory en objets Annonce.
+    def charger_si_necessaire(self) -> None:
+        """Charge le calendrier uniquement si non initialisé."""
+        if not self._evenements:
+            self.force_refresh()
 
-        Args:
-            data: Liste de dicts JSON de Forex Factory.
+    # ── Interface principale ───────────────────────────────────────────────
 
-        Returns:
-            Liste d'Annonce filtrées (High Impact uniquement, devises surveillées).
-        """
-        annonces = []
-        for item in data:
-            try:
-                devise = item.get("country", "").upper()
-                impact = item.get("impact", "").title()  # "High", "Medium", "Low"
-                titre = item.get("title", "")
-                date_str = item.get("date", "")
-                heure_str = item.get("time", "")
-
-                # Filtrer : High Impact uniquement + devises surveillées
-                if impact != "High":
-                    continue
-                if devise not in DEVISES_SURVEILLEES:
-                    continue
-                if not date_str or not heure_str or heure_str in ("", "All Day", "Tentative"):
-                    continue
-
-                # Parser le timestamp
-                try:
-                    # Format FF : "01-06-2026" et "2:30pm"
-                    dt_str = f"{date_str} {heure_str}"
-                    dt = datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
-                    # Forex Factory est en heure de New York (EST/EDT)
-                    # Approximation : UTC-4 en été (EDT)
-                    dt_utc = dt.replace(tzinfo=timezone.utc) + timedelta(hours=4)
-                    annonces.append(Annonce(titre, devise, impact, dt_utc))
-                except ValueError:
-                    continue
-
-            except Exception:
-                continue
-
-        return sorted(annonces, key=lambda a: a.timestamp_utc)
-
-    def trading_autorise(self, maintenant_utc: Optional[datetime] = None) -> tuple:
+    def is_trading_allowed(
+        self,
+        check_time: Optional[datetime] = None,
+    ) -> Tuple[bool, str]:
         """
         Vérifie si le trading est autorisé à l'instant donné.
 
         Args:
-            maintenant_utc: Datetime UTC actuel (défaut: now()).
+            check_time: Datetime UTC à vérifier. Si None → datetime.utcnow().
 
         Returns:
-            Tuple (autorisé: bool, raison: str).
+            (True, "OK") si le trading est autorisé.
+            (False, raison) si le trading est bloqué.
+            En cas d'erreur totale → (False, "Calendrier indisponible") par sécurité.
         """
-        if maintenant_utc is None:
-            maintenant_utc = datetime.now(timezone.utc)
+        try:
+            if check_time is None:
+                check_time = datetime.utcnow()
 
-        # Recharger les annonces si nécessaire
-        self.charger_annonces()
+            # S'assurer que check_time est naive (sans timezone) pour la comparaison
+            if check_time.tzinfo is not None:
+                check_time = check_time.astimezone(timezone.utc).replace(tzinfo=None)
 
-        if not self.annonces:
-            # Pas de données → ne pas bloquer (fail open)
-            return True, ""
+            # Charger si nécessaire
+            self.charger_si_necessaire()
 
-        fenetre_avant = timedelta(minutes=MARGE_AVANT_MINUTES)
-        fenetre_apres = timedelta(minutes=MARGE_APRES_MINUTES)
+            # Si aucun événement chargé → bloquer par sécurité
+            if not self._evenements:
+                return False, "Calendrier news indisponible — trading bloqué par sécurité"
 
-        for annonce in self.annonces:
-            debut_blocage = annonce.timestamp_utc - fenetre_avant
-            fin_blocage = annonce.timestamp_utc + fenetre_apres
+            # Vérifier les événements dans une fenêtre de ±4h
+            evenements_proches = self._get_evenements_proches(check_time, fenetre_heures=4)
 
-            if debut_blocage <= maintenant_utc <= fin_blocage:
-                temps_restant = annonce.timestamp_utc - maintenant_utc
-                if temps_restant.total_seconds() > 0:
-                    minutes = int(temps_restant.total_seconds() / 60)
-                    raison = (
-                        f"Annonce HIGH IMPACT dans {minutes} min : "
-                        f"{annonce.devise} — {annonce.titre}"
-                    )
+            for event in evenements_proches:
+                est_critique = self._est_critique(event.title)
+
+                if est_critique:
+                    avant = timedelta(minutes=BLOCAGE_CRITIQUE_AVANT_MIN)
+                    apres = timedelta(minutes=BLOCAGE_CRITIQUE_APRES_MIN)
+                    label = "CRITIQUE"
                 else:
-                    minutes = int(-temps_restant.total_seconds() / 60)
-                    raison = (
-                        f"Post-annonce HIGH IMPACT ({minutes} min écoulées) : "
-                        f"{annonce.devise} — {annonce.titre}"
+                    avant = timedelta(minutes=BLOCAGE_STANDARD_AVANT_MIN)
+                    apres = timedelta(minutes=BLOCAGE_STANDARD_APRES_MIN)
+                    label = "HIGH"
+
+                debut_blocage = event.datetime_utc - avant
+                fin_blocage = event.datetime_utc + apres
+
+                if debut_blocage <= check_time <= fin_blocage:
+                    if check_time < event.datetime_utc:
+                        minutes_restantes = int(
+                            (event.datetime_utc - check_time).total_seconds() / 60
+                        )
+                        raison = (
+                            f"News {label} dans {minutes_restantes}min : "
+                            f"{event.title} ({event.currency})"
+                        )
+                    else:
+                        minutes_ecoules = int(
+                            (check_time - event.datetime_utc).total_seconds() / 60
+                        )
+                        raison = (
+                            f"Post-news {label} ({minutes_ecoules}min écoulées) : "
+                            f"{event.title} ({event.currency})"
+                        )
+
+                    logger.debug(
+                        f"Trading bloqué | {raison} | "
+                        f"Fenêtre: {debut_blocage.strftime('%H:%M')}–"
+                        f"{fin_blocage.strftime('%H:%M')} UTC"
                     )
-                logger.warning(f"⛔ Trading bloqué — {raison}")
-                return False, raison
+                    return False, raison
 
-        return True, ""
+            return True, "OK"
 
-    def prochaine_annonce(self, maintenant_utc: Optional[datetime] = None) -> Optional[Annonce]:
+        except Exception as e:
+            # Fail-safe absolu : en cas d'exception imprévue, bloquer
+            logger.error(f"Erreur FiltreNews.is_trading_allowed : {e}")
+            return False, f"Erreur filtre news — trading bloqué par sécurité ({e})"
+
+    # ── Méthodes utilitaires ──────────────────────────────────────────────
+
+    def get_next_news(
+        self,
+        from_time: Optional[datetime] = None,
+    ) -> Optional[EvenementNews]:
         """
-        Retourne la prochaine annonce High Impact à venir.
+        Retourne le prochain événement HIGH/CRITICAL à venir.
 
         Args:
-            maintenant_utc: Datetime UTC actuel.
+            from_time: Référence temporelle (défaut: maintenant UTC).
 
         Returns:
-            Prochaine annonce ou None.
+            Prochain EvenementNews ou None si aucun.
         """
-        if maintenant_utc is None:
-            maintenant_utc = datetime.now(timezone.utc)
+        if from_time is None:
+            from_time = datetime.utcnow()
+        if from_time.tzinfo is not None:
+            from_time = from_time.replace(tzinfo=None)
 
-        self.charger_annonces()
-        futures = [a for a in self.annonces if a.timestamp_utc > maintenant_utc]
-        return futures[0] if futures else None
+        self.charger_si_necessaire()
+        futurs = [e for e in self._evenements if e.datetime_utc > from_time]
+        return futurs[0] if futurs else None
 
-    def get_annonces_aujourd_hui(self) -> List[Annonce]:
-        """Retourne les annonces High Impact du jour."""
-        self.charger_annonces()
-        aujourd_hui = datetime.now(timezone.utc).date()
-        return [a for a in self.annonces if a.timestamp_utc.date() == aujourd_hui]
+    def get_today_events(self) -> List[EvenementNews]:
+        """
+        Retourne tous les événements du jour en cours (UTC).
+
+        Returns:
+            Liste d'EvenementNews du jour, triée par heure.
+        """
+        self.charger_si_necessaire()
+        aujourd_hui = datetime.utcnow().date()
+        return [e for e in self._evenements if e.datetime_utc.date() == aujourd_hui]
+
+    def get_events_this_week(self) -> List[EvenementNews]:
+        """
+        Retourne tous les événements de la semaine (7 prochains jours).
+
+        Returns:
+            Liste d'EvenementNews de la semaine.
+        """
+        self.charger_si_necessaire()
+        maintenant = datetime.utcnow()
+        dans_7_jours = maintenant + timedelta(days=7)
+        return [
+            e for e in self._evenements
+            if maintenant.replace(tzinfo=None) <= e.datetime_utc <= dans_7_jours.replace(tzinfo=None)
+        ]
+
+    def is_calendar_fresh(self) -> bool:
+        """
+        Vérifie si le calendrier a été mis à jour dans les MAX_AGE_CACHE_HEURES dernières heures.
+
+        Returns:
+            True si le calendrier est frais.
+        """
+        if self._timestamp_derniere_maj is None:
+            return False
+        age = (datetime.utcnow() - self._timestamp_derniere_maj).total_seconds() / 3600
+        return age < MAX_AGE_CACHE_HEURES
+
+    def get_status(self) -> dict:
+        """
+        Retourne le statut complet du filtre pour le dashboard.
+
+        Returns:
+            Dict avec source, dernière MAJ, nb events, prochaine news.
+        """
+        self.charger_si_necessaire()
+        prochaine = self.get_next_news()
+        maintenant = datetime.utcnow()
+
+        if prochaine:
+            delta = prochaine.datetime_utc - maintenant
+            total_min = int(delta.total_seconds() / 60)
+            jours = total_min // (24 * 60)
+            heures = (total_min % (24 * 60)) // 60
+            minutes = total_min % 60
+
+            if jours > 0:
+                texte_prochaine = f"{prochaine.title} dans {jours}j {heures}h"
+            elif heures > 0:
+                texte_prochaine = f"{prochaine.title} dans {heures}h{minutes:02d}m"
+            else:
+                texte_prochaine = f"{prochaine.title} dans {minutes}min"
+        else:
+            texte_prochaine = "Aucune annonce prévue"
+
+        age_heures = None
+        if self._timestamp_derniere_maj:
+            age_heures = round(
+                (maintenant - self._timestamp_derniere_maj).total_seconds() / 3600, 1
+            )
+
+        trading_ok, raison = self.is_trading_allowed(maintenant)
+
+        return {
+            "source": self._source_active,
+            "derniere_maj": (
+                self._timestamp_derniere_maj.strftime("%d/%m %H:%M UTC")
+                if self._timestamp_derniere_maj else "jamais"
+            ),
+            "age_cache_heures": age_heures,
+            "events_charges": len(self._evenements),
+            "events_cette_semaine": len(self.get_events_this_week()),
+            "prochaine_news": texte_prochaine,
+            "calendar_frais": self.is_calendar_fresh(),
+            "trading_autorise": trading_ok,
+            "raison_blocage": raison if not trading_ok else "",
+        }
 
     def resume_pour_dashboard(self) -> str:
-        """Retourne un résumé court pour le dashboard."""
-        prochaine = self.prochaine_annonce()
+        """Retourne un résumé court (1 ligne) pour le dashboard."""
+        prochaine = self.get_next_news()
         if prochaine is None:
-            return "Aucune annonce"
-        delta = prochaine.timestamp_utc - datetime.now(timezone.utc)
-        heures = int(delta.total_seconds() / 3600)
-        minutes = int((delta.total_seconds() % 3600) / 60)
-        return f"{prochaine.devise} {prochaine.titre} dans {heures}h{minutes:02d}m"
+            return "Aucune annonce prévue"
+
+        delta = prochaine.datetime_utc - datetime.utcnow()
+        total_min = int(delta.total_seconds() / 60)
+
+        if total_min < 0:
+            return f"Post-news: {prochaine.title}"
+
+        jours = total_min // (24 * 60)
+        heures = (total_min % (24 * 60)) // 60
+        minutes = total_min % 60
+
+        if jours > 0:
+            return f"{prochaine.currency} {prochaine.title} dans {jours}j {heures}h"
+        elif heures > 0:
+            return f"{prochaine.currency} {prochaine.title} dans {heures}h{minutes:02d}m"
+        else:
+            return f"⚠️ {prochaine.currency} {prochaine.title} dans {minutes}min"
+
+    # ── Méthodes privées ──────────────────────────────────────────────────
+
+    def _est_critique(self, titre: str) -> bool:
+        """
+        Vérifie si un événement est critique pour XAUUSD.
+
+        Args:
+            titre: Nom de l'événement.
+
+        Returns:
+            True si l'événement est dans la liste critique.
+        """
+        titre_lower = titre.lower().strip()
+        return any(critique in titre_lower for critique in EVENEMENTS_CRITIQUES_XAUUSD)
+
+    def _get_evenements_proches(
+        self,
+        reference: datetime,
+        fenetre_heures: float = 4.0,
+    ) -> List[EvenementNews]:
+        """
+        Retourne les événements dans une fenêtre temporelle autour de reference.
+
+        Args:
+            reference: Datetime de référence (UTC naive).
+            fenetre_heures: Fenêtre en heures de chaque côté.
+
+        Returns:
+            Liste d'événements dans la fenêtre, triés par datetime_utc.
+        """
+        fenetre = timedelta(hours=fenetre_heures)
+        debut = reference - fenetre
+        fin = reference + fenetre
+        return [
+            e for e in self._evenements
+            if debut <= e.datetime_utc <= fin
+        ]

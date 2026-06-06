@@ -28,6 +28,9 @@ from trade_manager import GestionnairePositions
 from dashboard import Dashboard
 from notifier import NotificateurTelegram
 from backtest import Backtester
+from news_filter import FiltreNews
+from news_fetcher import RecuperateurCalendrier
+from news_scheduler import demarrer_scheduler_news, arreter_scheduler_news
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -111,9 +114,25 @@ def boucle_principale(mode: str) -> None:
 
     gestionnaire_risque = GestionnaireRisque()
     gestionnaire_positions = GestionnairePositions(connecteur)
-    strategie = StrategieSMC()
     dashboard = Dashboard(mode=mode)
     notifier = NotificateurTelegram()
+
+    # ── Initialisation du filtre news ─────────────────────────────────────
+    logger.info("Chargement du calendrier économique...")
+    fetcher = RecuperateurCalendrier()
+    filtre_news = FiltreNews(fetcher=fetcher)
+    filtre_news.force_refresh()  # Chargement initial au démarrage
+    scheduler_news = demarrer_scheduler_news(filtre_news)
+
+    status_news = filtre_news.get_status()
+    logger.info(
+        f"Filtre news initialisé | {status_news['events_charges']} events | "
+        f"Source: {status_news['source']} | "
+        f"Prochaine: {status_news['prochaine_news']}"
+    )
+
+    # Injecter le filtre dans la stratégie
+    strategie = StrategieSMC(filtre_news=filtre_news)
 
     # Initialiser la session
     info_compte = connecteur.get_info_compte()
@@ -344,6 +363,7 @@ def boucle_principale(mode: str) -> None:
         logger.critical(f"Exception non catchée: {e}\n{traceback.format_exc()}")
         notifier.alerte_erreur(str(e))
     finally:
+        arreter_scheduler_news(scheduler_news)
         dashboard.arreter()
         connecteur.deconnecter()
         logger.info("Bot arrêté proprement")

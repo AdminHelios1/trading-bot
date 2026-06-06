@@ -30,3 +30,8 @@ pytest-mock==3.14.0
 
 # ── Notifications (optionnel) ─────────────────────
 requests==2.32.3
+
+# ── Filtre news ────────────────────────────────────
+beautifulsoup4==4.12.3
+lxml==5.2.2
+pytz==2024.1

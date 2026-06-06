@@ -52,6 +52,14 @@ class Dashboard:
             "circuit_breaker": False,
             "bot_arrete": False,
             "derniere_mise_a_jour": "",
+            # Filtre news
+            "news_trading_autorise": True,
+            "news_raison_blocage": "",
+            "news_source": "—",
+            "news_events_charges": 0,
+            "news_prochaine": "—",
+            "news_derniere_maj": "—",
+            "news_calendar_frais": True,
         }
 
     def demarrer(self) -> None:
@@ -195,6 +203,32 @@ class Dashboard:
 
         return Panel(table, title="📈 POSITIONS OUVERTES", border_style="green")
 
+    def _construire_panel_news(self) -> Panel:
+        """Panneau affichant le statut du filtre news."""
+        e = self._etat
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=18)
+        table.add_column("Valeur", width=35)
+
+        # Statut trading
+        if e["news_trading_autorise"]:
+            statut_text = Text("✅ Trading autorisé", style="bold green")
+        else:
+            raison = e["news_raison_blocage"][:32] + "..." if len(e["news_raison_blocage"]) > 32 else e["news_raison_blocage"]
+            statut_text = Text(f"🔴 BLOQUÉ — {raison}", style="bold red")
+
+        table.add_row("Statut", statut_text)
+
+        # Source et fraîcheur
+        frais_emoji = "✅" if e["news_calendar_frais"] else "⚠️"
+        table.add_row("Source", f"{e['news_source']} {frais_emoji}")
+        table.add_row("Events chargés", f"{e['news_events_charges']}")
+        table.add_row("Prochaine news", Text(e["news_prochaine"], style="yellow"))
+        table.add_row("Dernière MAJ", e["news_derniere_maj"])
+
+        couleur_bordure = "red" if not e["news_trading_autorise"] else "magenta"
+        return Panel(table, title="📰 FILTRE NEWS", border_style=couleur_bordure)
+
     def _construire_panel_stats(self) -> Panel:
         """Panneau affichant les statistiques du jour et globales."""
         e = self._etat
@@ -258,6 +292,10 @@ class Dashboard:
         layout.add_row(
             self._construire_panel_positions(),
             self._construire_panel_stats(),
+        )
+        layout.add_row(
+            self._construire_panel_news(),
+            Text(""),  # Colonne vide pour équilibrer
         )
 
         return Panel(layout, title=titre, border_style="bright_blue", padding=(0, 1))

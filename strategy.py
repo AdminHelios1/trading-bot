@@ -15,6 +15,7 @@ from structure_analyzer import AnalyseurStructure, AnalyseStructure, Tendance, T
 from ob_detector import DetecteurOB, ZoneInstitutionnelle, TypeZone
 from indicators import Indicateurs
 from news_filter import FiltreNews
+from news_fetcher import RecuperateurCalendrier
 
 
 class DirectionSignal(Enum):
@@ -43,11 +44,14 @@ class StrategieSMC:
     Conditions TOUTES requises simultanément pour valider un signal.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, filtre_news: Optional[FiltreNews] = None) -> None:
+        """
+        Args:
+            filtre_news: Instance FiltreNews injectée (optionnel — crée la sienne si None).
+        """
         self.analyseur_structure = AnalyseurStructure()
         self.detecteur_ob = DetecteurOB()
-        self.filtre_news = FiltreNews()
-        self.filtre_news.charger_annonces()
+        self.filtre_news = filtre_news or FiltreNews(fetcher=RecuperateurCalendrier())
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -81,9 +85,9 @@ class StrategieSMC:
                 raison_rejet="Hors session de trading",
             )
 
-        # ── Filtre news : bloquer 30 min avant/après annonce High Impact ──
-        from datetime import datetime, timezone
-        news_ok, raison_news = self.filtre_news.trading_autorise(
+        # ── Filtre news : PREMIÈRE vérification (économise le CPU si bloqué) ──
+        # Fenêtres : CRITIQUE 45min avant/90min après | STANDARD 30min avant/60min après
+        news_ok, raison_news = self.filtre_news.is_trading_allowed(
             datetime.now(timezone.utc)
         )
         if not news_ok:
