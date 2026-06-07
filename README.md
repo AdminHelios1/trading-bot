@@ -285,3 +285,68 @@ Entrée → SL sous l'OB (+ 0.5×ATR M15)
 | rich | 13.7.1 | Dashboard terminal |
 | pytest | 8.2.2 | Tests unitaires |
 | requests | 2.32.3 | Notifications Telegram |
+
+
+---
+
+## Monitoring & Watchdog
+
+### Lancement avec watchdog (recommandé pour le live)
+
+```bash
+# Terminal 1 — Bot principal
+python main.py --mode paper
+
+# Terminal 2 — Watchdog indépendant (surveille le bot)
+python watchdog.py
+```
+
+Le watchdog surveille `data/heartbeat.json` toutes les 60 secondes.
+Si le bot ne répond plus depuis **15 minutes**, il envoie une alerte Telegram critique.
+
+### Configuration Telegram
+
+```bash
+# 1. Créer un bot via @BotFather sur Telegram
+# 2. Ajouter dans .env :
+TELEGRAM_TOKEN=123456789:ABCdef...
+TELEGRAM_CHAT_ID=987654321
+
+# 3. Trouver votre chat_id :
+curl https://api.telegram.org/bot{TOKEN}/getUpdates
+```
+
+### Commandes de contrôle à distance
+
+| Commande | Action |
+|---|---|
+| `/status` | État complet du bot |
+| `/pause` | Mettre en pause (no new trades) |
+| `/resume` | Reprendre le trading |
+| `/positions` | Positions ouvertes |
+| `/balance` | Balance et P&L du jour |
+| `/cb` | État circuit breaker |
+| `/stop` | Arrêt propre du bot |
+| `/help` | Liste des commandes |
+
+### Planificateur Windows (démarrage automatique)
+
+Créer deux tâches dans le **Planificateur de tâches Windows** :
+1. `python main.py --mode paper` → au démarrage de la session
+2. `python watchdog.py` → au démarrage de la session
+
+### Pings de santé
+
+Le bot envoie automatiquement un message Telegram silencieux toutes les **5 minutes** avec :
+- Statut du bot et de la connexion MT5
+- Nombre de positions ouvertes + P&L jour
+- Niveau du circuit breaker
+- CPU / RAM du serveur
+- Uptime
+
+### Rapport de disponibilité
+
+Chaque jour à **23h55 UTC**, un rapport automatique indique :
+- Uptime en % + durée
+- Nombre de pings envoyés
+- Alertes actives et critiques

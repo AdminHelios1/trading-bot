@@ -39,6 +39,9 @@ from slippage_simulator import SimulateurSlippage
 from trade_journal import JournalTrades
 from chart_generator import GenerateurGraphiques
 from performance_analyzer import AnalyseurPerformance
+from telegram_notifier import TelegramNotifier, NiveauAlerte, StatutBot
+from health_monitor import MoniteurSante
+from remote_control import TelecommandeBOT
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -125,6 +128,22 @@ def boucle_principale(mode: str) -> None:
     dashboard = Dashboard(mode=mode)
     notifier = NotificateurTelegram()
 
+    # ── Monitoring de santé (actif en live et paper) ──────────────────────
+    notificateur_monitoring = TelegramNotifier(config=CONFIG)
+    moniteur_sante = MoniteurSante(
+        connecteur=connecteur,
+        notifier=notificateur_monitoring,
+        config=CONFIG,
+        circuit_breaker=None,       # Injecté plus bas après init CB
+        daily_stats_tracker=None,   # Injecté plus bas après init stats
+    )
+    telecommande = TelecommandeBOT(
+        notifier=notificateur_monitoring,
+        moniteur_sante=moniteur_sante,
+        config=CONFIG,
+        circuit_breaker=None,   # Injecté plus bas
+    )
+
     # ── Journal de trades (toujours actif, paper et live) ─────────────────
     gen_graphiques  = GenerateurGraphiques(connecteur=connecteur, config=CONFIG)
     analyseur_perf  = AnalyseurPerformance(config=CONFIG)
@@ -188,6 +207,34 @@ def boucle_principale(mode: str) -> None:
                 name="Sauvegarde historique spread",
                 replace_existing=True,
             )
+            # Ping de santé Telegram toutes les 5 minutes
+            scheduler_news.add_job(
+                func=moniteur_sante.send_health_ping,
+                trigger="interval",
+                minutes=5,
+                id="health_ping",
+                name="Ping de santé Telegram",
+                replace_existing=True,
+            )
+            # Écoute des commandes distantes toutes les 30 secondes
+            scheduler_news.add_job(
+                func=telecommande.poll_and_execute,
+                trigger="interval",
+                seconds=30,
+                id="remote_control_poll",
+                name="Écoute commandes Telegram",
+                replace_existing=True,
+            )
+            # Rapport uptime journalier à 23h55 UTC
+            scheduler_news.add_job(
+                func=moniteur_sante.generer_rapport_uptime,
+                trigger="cron",
+                hour=23,
+                minute=55,
+                id="uptime_report",
+                name="Rapport disponibilité journalier",
+                replace_existing=True,
+            )
             # Rapport hebdomadaire : chaque lundi à 00h05 UTC
             def generer_rapport_hebdo():
                 maintenant = datetime.utcnow()
@@ -237,6 +284,22 @@ def boucle_principale(mode: str) -> None:
         f"Circuit Breaker initialisé | Niveau: {status_cb['niveau']} | "
         f"Pertes: {status_cb.get('pertes_consecutives', 0)} | "
         f"DD: {status_cb.get('drawdown_pct', 0):.2f}%"
+    )
+
+    # Injecter circuit_breaker et stats dans le moniteur de santé
+    moniteur_sante.circuit_breaker = circuit_breaker
+    moniteur_sante.daily_stats_tracker = suiveur_stats
+    telecommande.circuit_breaker = circuit_breaker
+
+    # Message de démarrage Telegram
+    notificateur_monitoring.send(
+        f"🚀 <b>SMC Bot XAUUSD démarré</b>\n"
+        f"Mode: <b>{mode.upper()}</b>\n"
+        f"Symbole: {CONFIG.SYMBOLE}\n"
+        f"Risk/trade: {CONFIG.RISQUE_PAR_TRADE_PCT}%\n"
+        f"RR minimum: {CONFIG.RR_MINIMUM}\n"
+        f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
+        level=NiveauAlerte.INFO,
     )
 
     # Injecter le filtre dans la stratégie
@@ -510,6 +573,19 @@ def boucle_principale(mode: str) -> None:
         logger.critical(f"Exception non catchée: {e}\n{traceback.format_exc()}")
         notifier.alerte_erreur(str(e))
     finally:
+        # Message d'arrêt Telegram
+        try:
+            moniteur_sante.definir_statut_bot(StatutBot.ARRETE)
+            notificateur_monitoring.send(
+                f"⛔ <b>Bot arrêté</b>\n"
+                f"Mode: {mode.upper()} | "
+                f"Pings envoyés: {moniteur_sante._nb_pings}\n"
+                f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
+                level=NiveauAlerte.WARNING,
+            )
+        except Exception:
+            pass
+
         # ── Rapport de simulation à l'arrêt (mode paper) ──────────────────
         if (mode == "paper"
                 and simulateur_slippage is not None
