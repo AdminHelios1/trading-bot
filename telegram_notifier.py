@@ -187,6 +187,12 @@ class TelegramNotifier:
         chat_id: str = "",
         config=None,
     ) -> None:
+        # Charger le .env si pas encore chargé
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:
+            pass
         self.token = token or os.getenv("TELEGRAM_TOKEN", "")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self.config = config
