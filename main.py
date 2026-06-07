@@ -435,13 +435,19 @@ def boucle_principale(mode: str) -> None:
                         circuit_breaker.evaluer_apres_trade(resultat_cb)
 
             # Vérifier invalidations
-            for ticket, etat_pos in list(gestionnaire_positions.positions.items()):
+            if (gestionnaire_positions._trade_actif
+                    and not gestionnaire_positions._trade_actif.est_ferme):
+                trade_actif = gestionnaire_positions._trade_actif
                 invalide, raison = strategie.position_invalidee(
-                    df_h4, df_m15, etat_pos.direction, etat_pos.zone_reference
+                    df_h4, df_m15,
+                    trade_actif.direction.value,
+                    trade_actif.tp2,
                 )
                 if invalide:
-                    logger.warning(f"Invalidation position {ticket}: {raison}")
-                    gestionnaire_positions.fermer_position_invalidation(ticket, raison)
+                    logger.warning(f"Invalidation position: {raison}")
+                    gestionnaire_positions.fermer_position_invalidation(
+                        trade_actif.ticket_mt5, raison
+                    )
 
             # ── 8. Évaluer un nouveau setup si aucune position ouverte ─────
             if (
