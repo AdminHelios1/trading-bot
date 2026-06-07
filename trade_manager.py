@@ -127,7 +127,8 @@ class GestionnairePositions:
         self._trade_actif: Optional[TradeGere] = None
         self._position_tracker = None
         self._partial_closer = None
-        self.pyramiding_manager = None  # Injecté depuis main.py si PYRAMIDING_ENABLED
+        self.pyramiding_manager = None   # Injecté depuis main.py si PYRAMIDING_ENABLED
+        self.journal = None              # Injecté depuis main.py (JournalTrades)
 
     def _init_sous_modules(self) -> None:
         """Initialise les sous-modules au premier usage (lazy init)."""
@@ -614,7 +615,7 @@ class GestionnairePositions:
             pass
 
     def _logger_fermeture(self, trade: TradeGere) -> None:
-        """Log complet de la clôture."""
+        """Log complet de la clôture et enregistrement dans le journal."""
         phases = []
         if trade.tp1.atteint:
             phases.append("TP1(+1R×50%)")
@@ -632,3 +633,20 @@ class GestionnairePositions:
             f"Phases: {' → '.join(phases) or 'Aucune'} | "
             f"MFE: {trade.mfe:.2f}R | MAE: {trade.mae:.2f}R"
         )
+
+        # ── Enregistrement dans le journal de trades ──────────────────────
+        if self.journal is not None:
+            try:
+                addon = None
+                if (self.pyramiding_manager is not None
+                        and trade.id_trade in self.pyramiding_manager._states):
+                    etat_py = self.pyramiding_manager._states[trade.id_trade]
+                    if etat_py.addon is not None:
+                        addon = etat_py.addon
+
+                self.journal.enregistrer_trade(
+                    trade=trade,
+                    addon=addon,
+                )
+            except Exception as e:
+                logger.error(f"Erreur enregistrement journal trade : {e}")

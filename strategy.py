@@ -64,6 +64,7 @@ class StrategieSMC:
         self.circuit_breaker = circuit_breaker
         self.analyseur_biais = analyseur_biais   # AnalyseurBiaisJournalier optionnel
         self._dernier_multiplicateur_risk: float = 1.0
+        self.journal = None                       # Injecté depuis main.py (JournalTrades)
 
     # ── Point d'entrée principal ───────────────────────────────────────────
 
@@ -229,12 +230,27 @@ class StrategieSMC:
         raison = signal_long.raison_rejet or signal_short.raison_rejet or "Conditions non réunies"
         logger.debug(f"Pas de signal | {raison}")
 
-        return SignalTrading(
+        signal_aucun = SignalTrading(
             direction=DirectionSignal.AUCUN,
             valide=False,
             zone_reference=None,
             raison_rejet=raison,
         )
+
+        # ── Enregistrement du signal rejeté dans le journal ───────────────
+        if self.journal is not None:
+            try:
+                prix_actuel_log = float(df_m5["close"].iloc[-1])
+                self.journal.record_rejected_signal(
+                    signal_result=signal_aucun,
+                    current_price=prix_actuel_log,
+                    structure=analyse if "analyse" in dir() else None,
+                    daily_bias=None,
+                )
+            except Exception:
+                pass
+
+        return signal_aucun
 
     # ── Évaluation LONG multi-TF ──────────────────────────────────────────
 

@@ -13,7 +13,7 @@ import signal
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import MetaTrader5 as mt5
@@ -36,6 +36,9 @@ from spread_filter import FiltreSpread
 from circuit_breaker import CircuitBreaker, NiveauCB
 from daily_stats_tracker import SuiveurStatsJournalieres, ResultatTrade
 from slippage_simulator import SimulateurSlippage
+from trade_journal import JournalTrades
+from chart_generator import GenerateurGraphiques
+from performance_analyzer import AnalyseurPerformance
 
 
 # ── Gestion des signaux systèmes (Ctrl+C, SIGTERM) ────────────────────────
@@ -122,6 +125,19 @@ def boucle_principale(mode: str) -> None:
     dashboard = Dashboard(mode=mode)
     notifier = NotificateurTelegram()
 
+    # ── Journal de trades (toujours actif, paper et live) ─────────────────
+    gen_graphiques  = GenerateurGraphiques(connecteur=connecteur, config=CONFIG)
+    analyseur_perf  = AnalyseurPerformance(config=CONFIG)
+    journal_trades  = JournalTrades(
+        connecteur=connecteur,
+        config=CONFIG,
+        generateur_graphiques=gen_graphiques,
+        analyseur_performance=analyseur_perf,
+    )
+    # Injecter le journal dans trade_manager et strategy
+    gestionnaire_positions.journal = journal_trades
+    logger.info("Journal de trades initialisé")
+
     # ── Simulateur de slippage (mode paper uniquement) ─────────────────────
     simulateur_slippage = None
     if mode == "paper":
@@ -172,6 +188,28 @@ def boucle_principale(mode: str) -> None:
                 name="Sauvegarde historique spread",
                 replace_existing=True,
             )
+            # Rapport hebdomadaire : chaque lundi à 00h05 UTC
+            def generer_rapport_hebdo():
+                maintenant = datetime.utcnow()
+                semaine_fin = maintenant
+                semaine_debut = maintenant - timedelta(days=7)
+                try:
+                    journal_trades.generer_rapport_hebdomadaire(
+                        semaine_debut, semaine_fin
+                    )
+                except Exception as e:
+                    logger.error(f"Rapport hebdomadaire échoué : {e}")
+
+            scheduler_news.add_job(
+                func=generer_rapport_hebdo,
+                trigger="cron",
+                day_of_week="mon",
+                hour=0,
+                minute=5,
+                id="rapport_hebdomadaire",
+                name="Rapport hebdomadaire SMC Bot",
+                replace_existing=True,
+            )
             logger.info("Jobs spread ajoutés au scheduler")
         except Exception as e:
             logger.warning(f"Impossible d'ajouter les jobs spread au scheduler : {e}")
@@ -207,6 +245,7 @@ def boucle_principale(mode: str) -> None:
         filtre_spread=filtre_spread,
         circuit_breaker=circuit_breaker,
     )
+    strategie.journal = journal_trades  # Journal des signaux rejetés
 
     # Initialiser la session
     info_compte = connecteur.get_info_compte()
