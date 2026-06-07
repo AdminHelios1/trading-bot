@@ -2,7 +2,7 @@
 # Installer avec : pip install -r requirements.txt
 
 # ── MetaTrader 5 (Windows uniquement) ─────────────
-MetaTrader5==5.0.45
+MetaTrader5>=5.0.45
 
 # ── Données & calcul ──────────────────────────────
 pandas==2.2.3
