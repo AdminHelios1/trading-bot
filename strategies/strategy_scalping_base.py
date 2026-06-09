@@ -327,7 +327,9 @@ class ScalpingStrategy(StrategieBase):
                           ind["close"] > ind["ema_trend"])
         trigger_bull   = ind["bounce_bull"] or ind["cross_up"]
         pa_bull        = (ind["bull_engulf"] or ind["bull_pin"]) and ind["close_pos_pct"] >= 60
-        vol_bull       = ind["volume"] > ind["vol_avg"] * vol_mult
+        # Filtre volume — ignoré si vol_avg ~= 1.0 (démo / tick_volume non fiable)
+        vol_avg_fiable = ind["vol_avg"] > 1.0
+        vol_bull = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         long_ok = (
             trigger_bull and
@@ -345,7 +347,7 @@ class ScalpingStrategy(StrategieBase):
                           ind["close"] < ind["ema_trend"])
         trigger_bear   = ind["bounce_bear"] or ind["cross_down"]
         pa_bear        = (ind["bear_engulf"] or ind["bear_pin"]) and ind["close_pos_pct"] <= 40
-        vol_bear       = ind["volume"] > ind["vol_avg"] * vol_mult
+        vol_bear = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         short_ok = (
             trigger_bear and
@@ -413,6 +415,16 @@ class ScalpingStrategy(StrategieBase):
                 take_profit=tp,
             )
 
+        symbole = getattr(self.config, "SYMBOLE", "?")
+        logger.debug(
+            f"[{symbole}] PAS DE SIGNAL | "
+            f"LONG → Trend:{tendance_bull} HTF:{htf_bull} Trigger:{trigger_bull} "
+            f"PA:{pa_bull} ADX:{ind['adx']:.1f}(>{adx_min}) "
+            f"RSI:{ind['rsi']:.1f}([{rsi_bull_min}-{rsi_bull_max}]) "
+            f"EMAsp:{ind['ema_spread_pct']:.3f}%(>={ema_min_sp}) Vol:{vol_bull} | "
+            f"SHORT → Trend:{tendance_bear} HTF:{htf_bear} Trigger:{trigger_bear} "
+            f"PA:{pa_bear} RSI:[{rsi_bear_min}-{rsi_bear_max}] Vol:{vol_bear}"
+        )
         return SignalResult(
             signal=None,
             rejected_by="no_signal",

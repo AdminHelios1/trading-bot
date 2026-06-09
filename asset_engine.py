@@ -275,35 +275,162 @@ class MoteurActif:
     def _executer_signal(self, signal) -> None:
         """Exécute un signal validé — ouvre la position sur MT5."""
         try:
-            if self.notifier is not None:
-                direction = getattr(signal, "signal", None) or getattr(
-                    signal, "direction", None
-                )
-                direction_str = str(direction)
-                if hasattr(direction, "value"):
-                    direction_str = direction.value
+            if self.connecteur is None:
+                logger.warning(f"[{self.symbole}] Connecteur MT5 absent — ordre ignoré")
+                return
 
-                self.notifier.send_trade_notification("OPEN", {
-                    "symbol": self.symbole,
-                    "direction": "LONG" if "long" in direction_str.lower()
-                                          or "bullish" in direction_str.lower()
-                                 else "SHORT",
-                    "entry": getattr(signal, "entry_price", 0.0)
-                             or getattr(signal, "prix_entree_suggere", 0.0),
-                    "sl": 0.0,
-                    "tp1": 0.0,
-                    "lots": 0.0,
-                    "risk_pct": getattr(
-                        self.config, "RISQUE_PAR_TRADE_PCT", 1.0
-                    ),
-                    "ob_score": getattr(signal, "ob_score", 0)
-                                or getattr(signal, "score_confiance", 0),
-                    "ob_strength": getattr(signal, "ob_strength", ""),
-                    "confluences": getattr(signal, "confluences", []),
-                })
+            # ── Direction ──────────────────────────────────────────────────
+            direction_raw = getattr(signal, "signal", None) or getattr(
+                signal, "direction", None
+            )
+            direction_str = str(direction_raw) if direction_raw else ""
+            if hasattr(direction_raw, "value"):
+                direction_str = direction_raw.value
+
+            is_long = "long" in direction_str.lower() or "bullish" in direction_str.lower()
+
+            # ── Prix d'entrée (tick actuel) ────────────────────────────────
+            tick = self.connecteur.get_tick(self.symbole)
+            if tick is None:
+                logger.error(f"[{self.symbole}] Tick introuvable — ordre annulé")
+                return
+
+            import MetaTrader5 as mt5
+            if is_long:
+                prix_entree = float(tick["ask"])
+                type_ordre = mt5.ORDER_TYPE_BUY
+            else:
+                prix_entree = float(tick["bid"])
+                type_ordre = mt5.ORDER_TYPE_SELL
+
+            # ── SL / TP calculés par la stratégie ─────────────────────────
+            sl = float(getattr(signal, "stop_loss", 0.0))
+            tp = float(getattr(signal, "take_profit", 0.0))
+
+            if sl <= 0.0 or tp <= 0.0:
+                logger.warning(
+                    f"[{self.symbole}] SL={sl} TP={tp} invalides — ordre annulé"
+                )
+                return
+
+            # ── Calcul du volume (lots) basé sur le risque % ───────────────
+            lots = self._calculer_lots(prix_entree, sl)
+            if lots <= 0.0:
+                logger.warning(f"[{self.symbole}] Volume calculé = 0 — ordre annulé")
+                return
+
+            # ── Envoi de l'ordre ───────────────────────────────────────────
+            commentaire = f"SCALP_{self.symbole}"
+            resultat = self.connecteur.placer_ordre(
+                symbole=self.symbole,
+                type_ordre=type_ordre,
+                volume=lots,
+                prix=prix_entree,
+                sl=sl,
+                tp=tp,
+                commentaire=commentaire,
+            )
+
+            if resultat is None:
+                logger.error(f"[{self.symbole}] Ordre rejeté par MT5")
+                return
+
+            direction_label = "LONG" if is_long else "SHORT"
+            logger.success(
+                f"[{self.symbole}] ✅ Ordre ouvert | {direction_label} "
+                f"{lots} lots @ {prix_entree:.2f} | SL:{sl:.2f} TP:{tp:.2f}"
+            )
+
+            # ── Notification Telegram ──────────────────────────────────────
+            if self.notifier is not None:
+                try:
+                    self.notifier.send_trade_notification("OPEN", {
+                        "symbol": self.symbole,
+                        "direction": direction_label,
+                        "entry": prix_entree,
+                        "sl": sl,
+                        "tp1": tp,
+                        "lots": lots,
+                        "risk_pct": getattr(self.config, "RISQUE_PAR_TRADE_PCT", 0.5),
+                        "ob_score": getattr(signal, "ob_score", 0),
+                        "ob_strength": getattr(signal, "ob_strength", "SCALP"),
+                        "confluences": getattr(signal, "confluences", []),
+                    })
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"[{self.symbole}] Exécution signal erreur : {e}")
+
+    def _calculer_lots(self, prix_entree: float, stop_loss: float) -> float:
+        """
+        Calcule le volume (lots) en fonction du risque % et de la distance SL.
+
+        Formule :
+            risk_usd = balance * risque_pct / 100
+            sl_ticks = abs(entry - sl) / tick_size
+            risk_per_lot = sl_ticks * tick_value
+            lots = risk_usd / risk_per_lot
+
+        Returns:
+            Volume arrondi au volume_step, clampé entre volume_min et volume_max.
+            0.0 en cas d'erreur.
+        """
+        try:
+            import MetaTrader5 as mt5
+            import math
+
+            # Balance du compte
+            account = mt5.account_info()
+            if account is None:
+                return 0.01  # Fallback minimal
+            balance = float(account.balance)
+
+            risque_pct = getattr(self.config, "RISQUE_PAR_TRADE_PCT",
+                                 getattr(self.config, "RISK_PER_TRADE_PCT", 0.5))
+            risk_usd = balance * risque_pct / 100.0
+
+            # Infos symbole
+            info = mt5.symbol_info(self.symbole)
+            if info is None:
+                return 0.01
+
+            tick_size  = float(info.trade_tick_size)
+            tick_value = float(info.trade_tick_value)
+            vol_min    = float(info.volume_min)
+            vol_max    = float(info.volume_max)
+            vol_step   = float(info.volume_step)
+
+            if tick_size <= 0 or tick_value <= 0:
+                return vol_min
+
+            sl_distance = abs(prix_entree - stop_loss)
+            if sl_distance <= 0:
+                return vol_min
+
+            sl_ticks = sl_distance / tick_size
+            risk_per_lot = sl_ticks * tick_value
+
+            if risk_per_lot <= 0:
+                return vol_min
+
+            lots_brut = risk_usd / risk_per_lot
+
+            # Arrondir au volume_step
+            lots = math.floor(lots_brut / vol_step) * vol_step
+            lots = max(vol_min, min(vol_max, lots))
+            lots = round(lots, 2)
+
+            logger.debug(
+                f"[{self.symbole}] Volume calc | "
+                f"Balance:{balance:.0f} Risk:{risque_pct}% ({risk_usd:.2f}$) | "
+                f"SL dist:{sl_distance:.4f} | Lots:{lots}"
+            )
+            return lots
+
+        except Exception as e:
+            logger.error(f"[{self.symbole}] Calcul lots erreur : {e}")
+            return 0.01
 
     def _get_ohlcv_lent(self):
         """Récupère les données OHLCV M15 pour la gestion des trades."""
