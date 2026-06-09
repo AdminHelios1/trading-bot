@@ -28,6 +28,7 @@ class ScalpingBaseConfig:
 
     # ── Identification ────────────────────────────────────────────────────
     SYMBOLE: str = "XAUUSD"
+    DISPLAY_NAME: str = "Actif Scalping"   # Alias anglais pour le dashboard
     NOM_AFFICHAGE: str = "Actif Scalping"
     TYPE_STRATEGIE: str = "SCALPING_HYBRID"
 
@@ -67,6 +68,7 @@ class ScalpingBaseConfig:
 
     # ── Price Action ──────────────────────────────────────────────────────
     PIN_BAR_RATIO: float = 0.55        # Mèche ≥ 55% du range pour pin bar
+    CLOSE_THIRD_FILTER: bool = True    # Clôture dans le bon tiers obligatoire
 
     # ── ATR / SL / TP ─────────────────────────────────────────────────────
     ATR_LEN: int = 14
@@ -86,7 +88,7 @@ class ScalpingBaseConfig:
     MAX_DRAWDOWN_JOURNALIER_PCT: float = 2.0
     MAX_DRAWDOWN_TOTAL_PCT: float = 8.0
     PORTFOLIO_MAX_EXPOSITION_PCT: float = 5.0
-    PORTFOLIO_MAX_DD_JOURNALIER_PCT: float = 5.0
+    PORTFOLIO_MAX_DD_JOURNALIER_PCT: float = 3.0   # Réduit pour scalping (était 5%)
 
     # ── Circuit breaker scalping — plus réactif ────────────────────────────
     CB_WARNING_DD_PCT: float = 1.0
@@ -94,9 +96,14 @@ class ScalpingBaseConfig:
     CB_PAUSE_DURATION_HEURES: int = 2
     CB_WARNING_RISK_MULTIPLIER: float = 0.5
 
+    # ── Sortie anticipée scalping ─────────────────────────────────────────
+    ADVERSE_CANDLE_EXIT: bool = True   # Sortir sur bougie contraire forte
+
     # ── Trailing stop — actif dès +0.5R en scalping ───────────────────────
-    TRAILING_ACTIVATION_RR: float = 0.5
-    TRAILING_DISTANCE_ATR: float = 1.0
+    TRAILING_ACTIVATION_R: float = 0.5    # Alias anglais
+    TRAILING_ACTIVATION_RR: float = 0.5   # Alias français (compat.)
+    TRAILING_ATR: float = 1.0             # Distance trailing en ATR
+    TRAILING_DISTANCE_ATR: float = 1.0    # Alias
 
     # ── Pyramiding — désactivé en scalping ────────────────────────────────
     PYRAMIDING_ENABLED: bool = False
@@ -144,6 +151,8 @@ class ScalpingBaseConfig:
     def MAX_DAILY_DRAWDOWN_PCT(self) -> float: return self.MAX_DRAWDOWN_JOURNALIER_PCT
     @property
     def PORTFOLIO_MAX_EXPOSURE_PCT(self) -> float: return self.PORTFOLIO_MAX_EXPOSITION_PCT
+    @property
+    def PORTFOLIO_MAX_DAILY_DD_PCT(self) -> float: return self.PORTFOLIO_MAX_DD_JOURNALIER_PCT
     @property
     def OB_MIN_SCORE(self) -> int: return 0
     @property

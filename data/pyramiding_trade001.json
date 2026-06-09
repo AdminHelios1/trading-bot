@@ -1,0 +1,30 @@
+{
+  "id_trade_parent": "trade001",
+  "addon_evalue": true,
+  "addon_ouvert": true,
+  "total_addons_ouverts": 0,
+  "total_addons_gagnants": 1,
+  "pnl_total_addons": 4.0,
+  "addon": {
+    "addon_id": "addon01",
+    "id_trade_parent": "trade001",
+    "ticket_mt5": 90001,
+    "statut": "FERM\u00c9_GAGNANT",
+    "direction": "bullish",
+    "prix_entree": 2010.0,
+    "lots": 0.02,
+    "sl_prix": 2000.0,
+    "tp1_prix": 2020.0,
+    "tp2_prix": 2030.0,
+    "sl_actuel": 2000.0,
+    "tp1_atteint": false,
+    "trailing_actif": false,
+    "trailing_price": null,
+    "trailing_atr_distance": 5.0,
+    "pnl_realise_usd": 4.0,
+    "pnl_total_usd": 4.0,
+    "r_total_realise": 0.2,
+    "mfe": 0.0,
+    "lots_restants": 0.0
+  }
+}

@@ -37,9 +37,12 @@ class ScalpingStrategy(StrategieBase):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # Suivi du cooldown entre trades
+        # Suivi du cooldown entre trades — deux modes : bar et temps
         self._heure_dernier_signal: Optional[datetime] = None
         self._dernier_bar_time: Optional[object] = None
+        # Compteurs de bougies pour le cooldown (compatibilité spec)
+        self._last_trade_bar: int = -999
+        self._current_bar: int = 0
 
     def get_strategy_name(self) -> str:
         return f"SCALPING_HYBRID_{getattr(self.config, 'SYMBOLE', '?')}"
@@ -224,23 +227,36 @@ class ScalpingStrategy(StrategieBase):
     def _check_cooldown(self) -> bool:
         """
         Vérifie que le cooldown entre trades est respecté.
-        COOLDOWN_BARS bougies minimum depuis le dernier signal.
+        Priorité au compteur de bougies (COOLDOWN_BARS).
+        Au premier démarrage (last_trade_bar == -999) : toujours autorisé.
         """
-        if self._heure_dernier_signal is None:
+        cooldown_bars = getattr(self.config, "COOLDOWN_BARS", 3)
+
+        # Incrémenter le compteur de bougies courant
+        self._current_bar += 1
+
+        # Premier démarrage : jamais de cooldown
+        if self._last_trade_bar == -999:
             return True
 
-        cooldown_bars = getattr(self.config, "COOLDOWN_BARS", 3)
-        # Calculer la durée d'une bougie selon le timeframe signal
-        tf = getattr(self.config, "TIMEFRAME_SIGNAL", 5)
-        tf_minutes = {1: 1, 5: 5, 15: 15, 30: 30, 16385: 60, 16388: 240}.get(tf, 5)
-        cooldown_secondes = cooldown_bars * tf_minutes * 60
-
-        ecoule = (datetime.utcnow() - self._heure_dernier_signal).total_seconds()
-        return ecoule >= cooldown_secondes
+        # Vérification bar : assez de bougies depuis le dernier trade ?
+        bars_since = self._current_bar - self._last_trade_bar
+        return bars_since >= cooldown_bars
 
     def _marquer_signal(self) -> None:
-        """Enregistre l'heure du dernier signal déclenché."""
+        """Enregistre le dernier signal déclenché (bar + temps)."""
         self._heure_dernier_signal = datetime.utcnow()
+        self._last_trade_bar = self._current_bar
+
+    # ── Aliases anglais (compatibilité spec et tests) ──────────────────────
+
+    def _calculate_indicators(self, df) -> Dict:
+        """Alias anglais de _calculer_indicateurs."""
+        return self._calculer_indicateurs(df)
+
+    def _register_trade(self) -> None:
+        """Alias anglais de _marquer_signal."""
+        self._marquer_signal()
 
     # ── Évaluation du signal scalping ─────────────────────────────────────
 

@@ -122,8 +122,9 @@ class GestionnairePositions:
     Interface compatible avec l'ancien code du bot.
     """
 
-    def __init__(self, connecteur=None) -> None:
+    def __init__(self, connecteur=None, config=None) -> None:
         self.connecteur = connecteur
+        self.config = config or CONFIG    # Config scalping injectée ou CONFIG global
         self._trade_actif: Optional[TradeGere] = None
         self._position_tracker = None
         self._partial_closer = None
@@ -595,6 +596,114 @@ class GestionnairePositions:
             return 5.0
 
     # ── Méthodes scalping ────────────────────────────────────────────────
+
+    def _check_adverse_candle_exit(
+        self,
+        trade: "TradeGere",
+        current_candle: dict,
+    ) -> bool:
+        """
+        Sortie anticipée scalping si une bougie contraire forte apparaît.
+        LONG en cours  → engulfing baissier + clôture tiers inférieur → sortir.
+        SHORT en cours → engulfing haussier + clôture tiers supérieur → sortir.
+
+        Appelé à chaque mise à jour de bougie fermée en scalping.
+        """
+        if not getattr(self.config, "ADVERSE_CANDLE_EXIT", True):
+            return False
+
+        est_long = (
+            trade.direction == DirectionTrade.LONG
+            if hasattr(trade, "direction")
+            else current_candle.get("direction", "bullish") == "bullish"
+        )
+
+        if est_long:
+            adverse = (
+                current_candle.get("bear_engulf", False) and
+                current_candle.get("close_pos_pct", 50) <= 35
+            )
+        else:
+            adverse = (
+                current_candle.get("bull_engulf", False) and
+                current_candle.get("close_pos_pct", 50) >= 65
+            )
+
+        if adverse:
+            logger.warning(
+                f"[SCALP] Bougie adverse → sortie anticipée "
+                f"[{getattr(trade, 'id_trade', '?')}] "
+                f"@ {current_candle.get('close', 0):.2f}"
+            )
+        return adverse
+
+    def _check_max_duration(
+        self,
+        trade: "TradeGere",
+        bars_open: int,
+    ) -> bool:
+        """
+        Ferme le trade si la durée max en bougies est dépassée.
+        En scalping M5 : 20 bougies = 100 minutes max.
+        Un trade scalping qui tient sans résultat = signal raté.
+        """
+        max_bars = getattr(self.config, "MAX_TRADE_DURATION_BARS", 20)
+        if bars_open >= max_bars:
+            logger.info(
+                f"[SCALP] Durée max {max_bars} bougies atteinte "
+                f"→ fermeture [{getattr(trade, 'id_trade', '?')}]"
+            )
+            return True
+        return False
+
+    def _update_trailing_stop_scalping(
+        self,
+        trade: "TradeGere",
+        current_price: float,
+        atr: float,
+    ) -> Optional[float]:
+        """
+        Trailing stop scalping — activé dès +0.5R (pas +1R comme en swing).
+        Distance : TRAILING_ATR × ATR (1.0× par défaut, plus serré qu'en swing 1.5×).
+
+        Returns:
+            Nouveau SL si le trailing doit être mis à jour, None sinon.
+        """
+        activation_r = getattr(self.config, "TRAILING_ACTIVATION_R",
+                                getattr(self.config, "TRAILING_ACTIVATION_RR", 0.5))
+        trailing_atr = getattr(self.config, "TRAILING_ATR",
+                                getattr(self.config, "TRAILING_DISTANCE_ATR", 1.0))
+        digits = getattr(self.config, "PRICE_DIGITS", 2)
+
+        # Calculer le SL actuel du trade
+        sl_actuel = float(trade.sl.prix_actuel) if hasattr(trade, "sl") else getattr(trade, "stop_loss", 0.0)
+        entry = float(trade.prix_entree) if hasattr(trade, "prix_entree") else getattr(trade, "entry_price", 0.0)
+        distance_risque = abs(entry - sl_actuel) if sl_actuel > 0 else atr
+
+        activation_price = (
+            entry + distance_risque * activation_r
+            if (hasattr(trade, "direction") and trade.direction == DirectionTrade.LONG)
+            or getattr(trade, "direction", "bullish") == "bullish"
+            else entry - distance_risque * activation_r
+        )
+
+        est_long = (
+            trade.direction == DirectionTrade.LONG
+            if hasattr(trade, "direction") and hasattr(trade.direction, "value")
+            else True
+        )
+
+        if est_long and current_price >= activation_price:
+            new_sl = round(current_price - atr * trailing_atr, digits)
+            if new_sl > sl_actuel:
+                return new_sl
+
+        if not est_long and current_price <= activation_price:
+            new_sl = round(current_price + atr * trailing_atr, digits)
+            if sl_actuel > 0 and new_sl < sl_actuel:
+                return new_sl
+
+        return None
 
     def _verifier_bougie_adverse_scalping(
         self,

@@ -60,7 +60,7 @@ class GestionnaireRisquePortefeuille:
     """
 
     MAX_EXPOSITION_PORTEFEUILLE_PCT: float = 5.0
-    MAX_DD_JOURNALIER_PORTEFEUILLE_PCT: float = 5.0
+    MAX_DD_JOURNALIER_PORTEFEUILLE_PCT: float = 3.0   # Réduit pour scalping (était 5%)
 
     # Ordre de priorité des actifs (en cas d'égalité OB score)
     PRIORITE_ACTIFS: List[str] = ["XAUUSD", "XTIUSD", "NAS100", "US500"]

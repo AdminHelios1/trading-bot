@@ -1,0 +1,77 @@
+{
+  "source": "forexfactory",
+  "timestamp_maj": "2026-06-09T11:30:08",
+  "nb_events": 10,
+  "events": [
+    {
+      "datetime_utc": "2026-06-10T12:30:00",
+      "title": "Core CPI m/m",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-10T12:30:00",
+      "title": "Core CPI y/y",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-10T12:30:00",
+      "title": "CPI m/m",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-10T12:30:00",
+      "title": "CPI y/y",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-11T12:15:00",
+      "title": "Main Refinancing Rate",
+      "currency": "EUR",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-11T12:15:00",
+      "title": "Monetary Policy Statement",
+      "currency": "EUR",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-11T12:30:00",
+      "title": "Core PPI m/m",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-11T12:30:00",
+      "title": "PPI m/m",
+      "currency": "USD",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-11T12:45:00",
+      "title": "ECB Press Conference",
+      "currency": "EUR",
+      "impact": "High",
+      "source": "forexfactory"
+    },
+    {
+      "datetime_utc": "2026-06-12T06:00:00",
+      "title": "GDP m/m",
+      "currency": "GBP",
+      "impact": "High",
+      "source": "forexfactory"
+    }
+  ]
+}

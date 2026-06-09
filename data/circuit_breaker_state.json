@@ -1,0 +1,63 @@
+{
+  "niveau": "WARNING",
+  "raison": "DD_SUPERIEUR_1_5_PCT",
+  "declenche_a": "2026-06-06T17:37:30.888816",
+  "pause_jusqu_a": null,
+  "reset_a_minuit": false,
+  "risk_pct_actuel": 0.5,
+  "trades_bloques": 0,
+  "dernier_reset": "2026-06-06T17:36:31.366666",
+  "historique": [
+    {
+      "niveau": "WARNING",
+      "raison": "2 pertes consécutives",
+      "declenche_a": "2026-06-06T17:36:31.076516",
+      "depuis_niveau": "AUCUN",
+      "reset_a": "2026-06-06T17:36:31.257507",
+      "raison_reset": "Trade gagnant pendant PAUSE — reset anticipé",
+      "trades_bloques": 0
+    },
+    {
+      "niveau": "ARRETE",
+      "raison": "4 pertes consécutives",
+      "declenche_a": "2026-06-06T17:36:31.195113",
+      "depuis_niveau": "WARNING",
+      "reset_a": "2026-06-06T17:36:31.253681",
+      "raison_reset": "Trade gagnant après WARNING",
+      "trades_bloques": 0
+    },
+    {
+      "niveau": "WARNING",
+      "raison": "2 pertes consécutives",
+      "declenche_a": "2026-06-06T17:36:31.303958",
+      "depuis_niveau": "PAUSE",
+      "reset_a": "2026-06-06T17:36:31.304361",
+      "raison_reset": "Test",
+      "trades_bloques": 0
+    },
+    {
+      "niveau": "PAUSE",
+      "raison": "3 pertes consécutives + DD > 1.5%",
+      "declenche_a": "2026-06-06T17:36:31.304657",
+      "depuis_niveau": "AUCUN",
+      "reset_a": "2026-06-06T17:36:31.366658",
+      "raison_reset": "Test trades bloqués",
+      "trades_bloques": 2
+    },
+    {
+      "niveau": "WARNING",
+      "raison": "2 pertes consécutives",
+      "declenche_a": "2026-06-06T17:36:31.346755",
+      "depuis_niveau": "PAUSE",
+      "reset_a": "2026-06-06T17:36:31.347563",
+      "raison_reset": "Raison test",
+      "trades_bloques": 0
+    },
+    {
+      "niveau": "WARNING",
+      "raison": "Drawdown > 1.5%",
+      "declenche_a": "2026-06-06T17:37:30.888816",
+      "depuis_niveau": "AUCUN"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "resume": {
+    "total_executions": 50,
+    "slippage_moyen_pts": 1.8,
+    "slippage_max_pts": 3.2,
+    "slippage_total_usd": 0.84,
+    "latence_moy_ms": 130.1,
+    "impact_live_estime_pct": 0.008,
+    "impact_pire_pct": 0.015,
+    "par_condition": {
+      "NORMAL": {
+        "nb": 50,
+        "slippage_moyen_pts": 1.8,
+        "latence_moy_ms": 130.1,
+        "nb_requotes": 2
+      }
+    }
+  },
+  "distribution_qualite": {
+    "parfait": 0,
+    "bon": 35,
+    "moyen": 13,
+    "mauvais": 0,
+    "requote": 2,
+    "partiel": 0
+  }
+}

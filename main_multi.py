@@ -141,12 +141,19 @@ def main() -> None:
         for s in args.symbols
     )
     notifier.send(
-        f"⚡ <b>SMC Scalping Bot Multi-Actif démarré</b>\n"
+        f"⚡ <b>SMC Scalping Bot démarré</b>\n"
         f"Mode: <b>{args.mode.upper()}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🥇 XAUUSD  → M5  (10s) | SMC Hybride\n"
+        f"💻 NAS100  → M1  (5s)  | Killzones ICT\n"
+        f"📈 SP500   → M5  (10s) | FVG Confirm\n"
+        f"🛢 WTI     → M5  (10s) | Liq. Sweep\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"Risk/trade : 0.5% | Expo max : 5%\n"
+        f"SL : 1.2–1.5×ATR | TP : 1.8–2.0R\n"
+        f"Trailing : +0.5R | Max durée : 20 bougies\n"
+        f"Heure UTC : {datetime.utcnow().strftime('%H:%M:%S')}\n"
         f"Actifs: {symboles_str}\n"
-        f"Exposition max: 5% | Risk/trade: 0.5%\n"
-        f"Stratégie: EMA 9/21/50 + RSI + ADX + Price Action\n"
-        f"Setups:\n{setups_str}\n"
         f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
         level=NiveauAlerte.INFO,
     )
@@ -162,8 +169,8 @@ def main() -> None:
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler(timezone="UTC")
 
-        # Cycle scalping — intervalle par actif selon son LOOP_INTERVAL_SEC
-        # Décalage de 2s entre actifs (était 15s) pour réactivité scalping
+        # Cycle scalping — intervalles par actif (NAS100 5s, autres 10s)
+        # Décalage 2s entre actifs pour éviter les appels MT5 simultanés
         for i, (symbole, moteur) in enumerate(moteurs.items()):
             interval = getattr(moteur.config, "LOOP_INTERVAL_SEC", 10)
             delai = i * 2  # 2s de décalage entre actifs
@@ -172,11 +179,14 @@ def main() -> None:
                 trigger="interval",
                 seconds=interval,
                 start_date=datetime.now(timezone.utc) + timedelta(seconds=delai),
-                id=f"scalp_cycle_{symbole}",
+                id=f"scalp_{symbole}",
                 name=f"Scalping {symbole} ({interval}s)",
+                max_instances=1,        # Éviter les chevauchements
+                coalesce=True,          # Fusionner si en retard
+                misfire_grace_time=3,   # Tolérance 3s (timeout MT5)
             )
             logger.info(
-                f"Job scalping {symbole} ajouté | "
+                f"Job scalping {symbole} | "
                 f"Intervalle: {interval}s | Démarrage dans {delai}s"
             )
 

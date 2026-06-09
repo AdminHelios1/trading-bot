@@ -153,21 +153,28 @@ class MoteurActif:
 
         try:
             # ── Stratégies scalping (nouvelles) ───────────────────────────
+            # NAS100 — détecter par symbole en priorité
+            symbole = getattr(self.config, "SYMBOLE",
+                               getattr(self.config, "SYMBOL", "XAUUSD"))
+            if symbole == "NAS100":
+                from strategies.strategy_scalping_nas100 import NAS100ScalpingStrategy
+                logger.info(f"AssetEngine: NAS100 → NAS100ScalpingStrategy M1")
+                return NAS100ScalpingStrategy(**kwargs_communs)
+
             if type_strategie in ("SCALPING_HYBRID", "SCALPING_HYBRID_FVG",
                                    "SCALPING_HYBRID_SWEEP"):
-                symbole = getattr(self.config, "SYMBOLE", "XAUUSD")
-                if symbole == "NAS100":
-                    from strategies.strategy_nas100 import StrategieNAS100
-                    return StrategieNAS100(**kwargs_communs)
-                elif symbole == "US500":
-                    from strategies.strategy_sp500 import StrategieSP500
-                    return StrategieSP500(**kwargs_communs)
+                if symbole == "US500":
+                    from strategies.strategy_scalping_sp500 import SP500ScalpingStrategy
+                    logger.info(f"AssetEngine: SP500 → SP500ScalpingStrategy M5 + FVG")
+                    return SP500ScalpingStrategy(**kwargs_communs)
                 elif symbole == "XTIUSD":
-                    from strategies.strategy_wti import StrategieWTI
-                    return StrategieWTI(**kwargs_communs)
+                    from strategies.strategy_scalping_wti import WTIScalpingStrategy
+                    logger.info(f"AssetEngine: WTI → WTIScalpingStrategy M5 + Sweep")
+                    return WTIScalpingStrategy(**kwargs_communs)
                 else:
                     # XAUUSD et autres → stratégie scalping de base
                     from strategies.strategy_scalping_base import ScalpingStrategy
+                    logger.info(f"AssetEngine: {symbole} → ScalpingStrategy M5")
                     return ScalpingStrategy(**kwargs_communs)
 
             # ── Stratégies SMC héritées (compatibilité) ───────────────────
