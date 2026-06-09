@@ -47,7 +47,7 @@ class ScalpingBaseConfig:
     EMA_SLOW: int = 21
     EMA_TREND: int = 50
     HTF_EMA_LEN: int = 21
-    EMA_MIN_SPREAD_PCT: float = 0.10   # Écart min EMA9/EMA21 (%)
+    EMA_MIN_SPREAD_PCT: float = 0.05   # Écart min EMA9/EMA21 (%) — abaissé de 0.10 à 0.05
 
     # ── RSI ───────────────────────────────────────────────────────────────
     RSI_LEN: int = 14
