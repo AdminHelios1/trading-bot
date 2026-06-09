@@ -24,20 +24,25 @@ class XAUUSDScalpConfig(ScalpingBaseConfig):
     # ── Timeframes Or — M5 signal ─────────────────────────────────────────
     TIMEFRAME_SIGNAL: int = _MT5_M5
     TIMEFRAME_CONFIRM: int = _MT5_M15
-    TIMEFRAME_HTF: int = _MT5_H1
+    TIMEFRAME_HTF: int = 16388  # H4 — filtre HTF plus souple qu'H1
     LOOP_INTERVAL_SEC: int = 10
 
-    # ── Sessions — éviter 15 premières minutes (spread élevé) ─────────────
+    # ── Sessions — élargie pour plus d'opportunités ───────────────────────
     SESSIONS: List[dict] = field(default_factory=lambda: [
         {
             "name": "London_Scalp",
-            "open": 7, "minute_open": 15,
-            "close": 12, "minute_close": 30,
+            "open": 7, "minute_open": 0,
+            "close": 12, "minute_close": 45,
+        },
+        {
+            "name": "Overlap_Scalp",
+            "open": 12, "minute_open": 45,
+            "close": 14, "minute_close": 0,
         },
         {
             "name": "NewYork_Scalp",
-            "open": 13, "minute_open": 45,
-            "close": 19, "minute_close": 30,
+            "open": 14, "minute_open": 0,
+            "close": 20, "minute_close": 0,
         },
     ])
 

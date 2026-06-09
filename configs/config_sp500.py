@@ -24,15 +24,20 @@ class SP500ScalpConfig(ScalpingBaseConfig):
     # ── Timeframes SP500 ──────────────────────────────────────────────────
     TIMEFRAME_SIGNAL: int = _MT5_M5
     TIMEFRAME_CONFIRM: int = _MT5_M15
-    TIMEFRAME_HTF: int = _MT5_H1
+    TIMEFRAME_HTF: int = 16388  # H4 — filtre HTF plus souple qu'H1
     LOOP_INTERVAL_SEC: int = 10
 
     # ── Sessions NY uniquement ────────────────────────────────────────────
     SESSIONS: List[dict] = field(default_factory=lambda: [
         {
+            "name": "PreNY_Scalp",
+            "open": 13, "minute_open": 0,
+            "close": 14, "minute_close": 0,
+        },
+        {
             "name": "NY_Scalp",
             "open": 14, "minute_open": 0,
-            "close": 20, "minute_close": 0,
+            "close": 20, "minute_close": 30,
         },
     ])
 

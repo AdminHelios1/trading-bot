@@ -326,7 +326,7 @@ class ScalpingStrategy(StrategieBase):
         tendance_bull  = (ind["ema_fast"] > ind["ema_slow"] and
                           ind["close"] > ind["ema_trend"])
         trigger_bull   = ind["bounce_bull"] or ind["cross_up"]
-        pa_bull        = (ind["bull_engulf"] or ind["bull_pin"]) and ind["close_pos_pct"] >= 60
+        pa_bull        = (ind["bull_engulf"] or ind["bull_pin"]) and ind["close_pos_pct"] >= 55
         # Filtre volume — ignoré si vol_avg ~= 1.0 (démo / tick_volume non fiable)
         vol_avg_fiable = ind["vol_avg"] > 1.0
         vol_bull = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
@@ -346,7 +346,7 @@ class ScalpingStrategy(StrategieBase):
         tendance_bear  = (ind["ema_fast"] < ind["ema_slow"] and
                           ind["close"] < ind["ema_trend"])
         trigger_bear   = ind["bounce_bear"] or ind["cross_down"]
-        pa_bear        = (ind["bear_engulf"] or ind["bear_pin"]) and ind["close_pos_pct"] <= 40
+        pa_bear        = (ind["bear_engulf"] or ind["bear_pin"]) and ind["close_pos_pct"] <= 45
         vol_bear = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         short_ok = (

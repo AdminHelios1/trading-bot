@@ -67,7 +67,7 @@ class ScalpingBaseConfig:
     VOL_MA_LEN: int = 20
 
     # ── Price Action ──────────────────────────────────────────────────────
-    PIN_BAR_RATIO: float = 0.55        # Mèche ≥ 55% du range pour pin bar
+    PIN_BAR_RATIO: float = 0.45        # Mèche ≥ 45% du range pour pin bar (assoupli)
     CLOSE_THIRD_FILTER: bool = True    # Clôture dans le bon tiers obligatoire
 
     # ── ATR / SL / TP ─────────────────────────────────────────────────────
