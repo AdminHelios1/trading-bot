@@ -285,12 +285,41 @@ class GestionnairePositions:
         return True
 
     def a_position_ouverte(self, symbole: Optional[str] = None) -> bool:
-        """Vérifie si une position est actuellement ouverte."""
-        if self._trade_actif is None or self._trade_actif.est_ferme:
-            return False
-        if symbole:
-            return self._trade_actif.symbole == symbole
-        return True
+        """
+        Vérifie si une position est actuellement ouverte.
+        Double vérification : état interne + MT5 direct.
+        Évite l'ouverture d'une 2ème position après redémarrage du bot.
+        """
+        # ── Vérification état interne ──────────────────────────────────────
+        interne = (
+            self._trade_actif is not None
+            and not self._trade_actif.est_ferme
+            and (symbole is None or self._trade_actif.symbole == symbole)
+        )
+        if interne:
+            return True
+
+        # ── Vérification MT5 directe (sécurité après redémarrage) ─────────
+        try:
+            import MetaTrader5 as mt5
+            magic = getattr(self.config, "MAGIC_NUMBER", CONFIG.MAGIC_NUMBER)
+            if symbole:
+                positions = mt5.positions_get(symbol=symbole)
+            else:
+                positions = mt5.positions_get()
+            if positions:
+                for pos in positions:
+                    if int(pos.magic) == magic:
+                        logger.warning(
+                            f"[TradeManager] Position MT5 orpheline détectée "
+                            f"#{pos.ticket} {pos.symbol} — bot redémarré sans fermeture. "
+                            f"Nouveau trade bloqué."
+                        )
+                        return True
+        except Exception as e:
+            logger.debug(f"[TradeManager] Vérif MT5 positions : {e}")
+
+        return False
 
     def get_resume_positions(self) -> List[Dict]:
         """Résumé complet pour le dashboard."""
