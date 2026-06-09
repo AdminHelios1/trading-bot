@@ -1,99 +1,18 @@
 {
-  "date_utc": "2026-06-06",
-  "balance_ouverture": 10000.0,
-  "balance_actuelle": 10100.0,
-  "balance_pic": 10200.0,
-  "trades": [
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.397133",
-      "direction": "LONG",
-      "r": -1.0,
-      "pnl": -100.0,
-      "gagnant": false,
-      "raison": "SL_TOUCHE",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.397870",
-      "direction": "LONG",
-      "r": -1.0,
-      "pnl": -100.0,
-      "gagnant": false,
-      "raison": "SL_TOUCHE",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.398613",
-      "direction": "LONG",
-      "r": -1.0,
-      "pnl": -100.0,
-      "gagnant": false,
-      "raison": "SL_TOUCHE",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.401091",
-      "direction": "LONG",
-      "r": 1.0,
-      "pnl": 100.0,
-      "gagnant": true,
-      "raison": "TP2_ATTEINT",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.403025",
-      "direction": "LONG",
-      "r": -1.0,
-      "pnl": -200.0,
-      "gagnant": false,
-      "raison": "SL_TOUCHE",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.404956",
-      "direction": "LONG",
-      "r": 1.0,
-      "pnl": 100.0,
-      "gagnant": true,
-      "raison": "TP2_ATTEINT",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.405594",
-      "direction": "LONG",
-      "r": 1.0,
-      "pnl": 100.0,
-      "gagnant": true,
-      "raison": "TP2_ATTEINT",
-      "ob_score": 75
-    },
-    {
-      "id_trade": "test_001",
-      "heure": "2026-06-06T17:36:31.406416",
-      "direction": "LONG",
-      "r": -1.0,
-      "pnl": -100.0,
-      "gagnant": false,
-      "raison": "SL_TOUCHE",
-      "ob_score": 75
-    }
-  ],
-  "pertes_consecutives": 1,
+  "date_utc": "2026-06-09",
+  "balance_ouverture": 100000.0,
+  "balance_actuelle": 100000.0,
+  "balance_pic": 100000.0,
+  "trades": [],
+  "pertes_consecutives": 0,
   "gains_consecutifs": 0,
-  "pnl_usd": -300.0,
-  "pnl_pct": 1.0,
-  "drawdown_pct": 0.9803921568627451,
-  "drawdown_max_pct": 3.0,
-  "nb_trades": 8,
-  "nb_gagnants": 3,
-  "nb_perdants": 5,
-  "win_rate": 37.5,
-  "derniere_maj": "2026-06-06T17:36:31.406430"
+  "pnl_usd": 0.0,
+  "pnl_pct": 0.0,
+  "drawdown_pct": 0.0,
+  "drawdown_max_pct": 0.0,
+  "nb_trades": 0,
+  "nb_gagnants": 0,
+  "nb_perdants": 0,
+  "win_rate": 0.0,
+  "derniere_maj": "2026-06-09T00:00:00.000000"
 }
