@@ -131,20 +131,21 @@ def main() -> None:
     # ── Message de démarrage Telegram ──────────────────────────────────────
     symboles_str = " | ".join(args.symbols)
     setups = {
-        "XAUUSD": "SMC Breaker Block",
-        "NAS100": "SMC + Killzones ICT",
-        "SP500":  "SMC + FVG Priority",
-        "WTI":    "SMC + Liquidity Sweep",
+        "XAUUSD": "Scalping M5 (EMA+RSI+ADX)",
+        "NAS100": "Scalping M1 (EMA 8/13/34 + Killzones)",
+        "SP500":  "Scalping M5 (EMA+RSI+ADX+FVG)",
+        "WTI":    "Scalping M5 (EMA+RSI+ADX+Sweep)",
     }
     setups_str = "\n".join(
         f"  {s} → {setups.get(s, '?')}"
         for s in args.symbols
     )
     notifier.send(
-        f"🚀 <b>SMC Bot Multi-Actif démarré</b>\n"
+        f"⚡ <b>SMC Scalping Bot Multi-Actif démarré</b>\n"
         f"Mode: <b>{args.mode.upper()}</b>\n"
         f"Actifs: {symboles_str}\n"
-        f"Exposition max: 5% | Risk/trade: 1%\n"
+        f"Exposition max: 5% | Risk/trade: 0.5%\n"
+        f"Stratégie: EMA 9/21/50 + RSI + ADX + Price Action\n"
         f"Setups:\n{setups_str}\n"
         f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}",
         level=NiveauAlerte.INFO,
@@ -161,18 +162,22 @@ def main() -> None:
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler(timezone="UTC")
 
-        # Cycle de trading — décalage 15s entre chaque actif
+        # Cycle scalping — intervalle par actif selon son LOOP_INTERVAL_SEC
+        # Décalage de 2s entre actifs (était 15s) pour réactivité scalping
         for i, (symbole, moteur) in enumerate(moteurs.items()):
+            interval = getattr(moteur.config, "LOOP_INTERVAL_SEC", 10)
+            delai = i * 2  # 2s de décalage entre actifs
             scheduler.add_job(
                 func=moteur.run_cycle,
                 trigger="interval",
-                seconds=60,
-                start_date=datetime.now(timezone.utc) + timedelta(seconds=i * 15),
-                id=f"cycle_{symbole}",
-                name=f"Cycle trading {symbole}",
+                seconds=interval,
+                start_date=datetime.now(timezone.utc) + timedelta(seconds=delai),
+                id=f"scalp_cycle_{symbole}",
+                name=f"Scalping {symbole} ({interval}s)",
             )
             logger.info(
-                f"Job cycle {symbole} ajouté (démarrage dans {i*15}s)"
+                f"Job scalping {symbole} ajouté | "
+                f"Intervalle: {interval}s | Démarrage dans {delai}s"
             )
 
         # Ping de santé global toutes les 5 minutes

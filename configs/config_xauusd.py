@@ -1,55 +1,69 @@
 """
-configs/config_xauusd.py — Configuration spécifique XAUUSD (Or).
+configs/config_xauusd.py — Configuration scalping XAUUSD (Or).
 
-Setup : SMC Breaker Block + Order Block Confluence (setup existant).
-Sessions : London (07h–13h UTC) + New York (13h–20h UTC).
+Timeframes : M5 signal, M15 confirm, H1 contexte.
+Sessions : London 07h15–12h30 UTC + NY 13h45–19h30 UTC.
+Éviter les 15 premières minutes de chaque session (spread élevé).
 """
 
 from dataclasses import dataclass, field
 from typing import List
 
-from configs.config_base import ConfigBase, _MT5_H4, _MT5_H1, _MT5_M15, _MT5_M5
+from configs.config_base import ScalpingBaseConfig, _MT5_M5, _MT5_M15, _MT5_H1
 
 
 @dataclass
-class ConfigXAUUSD(ConfigBase):
-    """Configuration complète pour le trading de l'Or (XAUUSD)."""
+class XAUUSDScalpConfig(ScalpingBaseConfig):
+    """Configuration scalping complète pour l'Or (XAUUSD)."""
 
     # ── Identification ────────────────────────────────────────────────────
     SYMBOLE: str = "XAUUSD"
-    NOM_AFFICHAGE: str = "Or (XAUUSD)"
-    TYPE_STRATEGIE: str = "SMC_BREAKER_BLOCK"
+    NOM_AFFICHAGE: str = "Or Scalping (XAUUSD)"
+    TYPE_STRATEGIE: str = "SCALPING_HYBRID"
 
-    # ── Timeframes ────────────────────────────────────────────────────────
-    TIMEFRAME_HTF: int = _MT5_H4
-    TIMEFRAME_MTF: int = _MT5_H1
-    TIMEFRAME_LTF: int = _MT5_M15
-    TIMEFRAME_ENTREE: int = _MT5_M5
+    # ── Timeframes Or — M5 signal ─────────────────────────────────────────
+    TIMEFRAME_SIGNAL: int = _MT5_M5
+    TIMEFRAME_CONFIRM: int = _MT5_M15
+    TIMEFRAME_HTF: int = _MT5_H1
+    LOOP_INTERVAL_SEC: int = 10
 
-    # ── Sessions (heures UTC) ─────────────────────────────────────────────
+    # ── Sessions — éviter 15 premières minutes (spread élevé) ─────────────
     SESSIONS: List[dict] = field(default_factory=lambda: [
-        {"name": "London",   "open": 7,  "close": 13},
-        {"name": "New_York", "open": 13, "close": 20},
+        {
+            "name": "London_Scalp",
+            "open": 7, "minute_open": 15,
+            "close": 12, "minute_close": 30,
+        },
+        {
+            "name": "NewYork_Scalp",
+            "open": 13, "minute_open": 45,
+            "close": 19, "minute_close": 30,
+        },
     ])
 
-    # Session asiatique utilisée pour le Daily Bias (pas de trade)
+    # Session asiatique — uniquement pour le Daily Bias
+    ASIAN_SESSION_ENABLED: bool = True
     SESSION_ASIATIQUE_DEBUT: int = 0
     SESSION_ASIATIQUE_FIN: int = 7
 
-    # ── Spread ────────────────────────────────────────────────────────────
-    SPREAD_HARD_CAP_POINTS: float = 35.0
-    SPREAD_DYNAMIC_MULTIPLIER: float = 2.5
+    # ── Spread plus strict en scalping ────────────────────────────────────
+    SPREAD_HARD_CAP_POINTS: float = 25.0
+    SPREAD_DYNAMIC_MULTIPLIER: float = 2.0
 
-    # ── Displacement — strict (Or très institutionnel) ─────────────────────
-    DISPLACEMENT_MIN_BODY_ATR_RATIO: float = 1.5
-    DISPLACEMENT_MIN_BODY_RANGE_PCT: float = 60.0
+    # ── SL/TP Or ──────────────────────────────────────────────────────────
+    SL_ATR_MULT: float = 1.5
+    RR_TP: float = 2.0
 
-    # ── Setup flags ────────────────────────────────────────────────────────
-    KILLZONES_ENABLED: bool = False
-    FVG_PRIORITY: bool = False
-    LIQUIDITY_SWEEP_ENABLED: bool = False
+    # ── RSI — Or suit bien la tendance ────────────────────────────────────
+    RSI_BULL_MIN: int = 45
+    RSI_BULL_MAX: int = 68
+    RSI_BEAR_MIN: int = 32
+    RSI_BEAR_MAX: int = 55
 
-    # ── News critiques XAUUSD ─────────────────────────────────────────────
+    # ── ADX Or — tendances claires ────────────────────────────────────────
+    ADX_MIN: float = 20.0
+
+    # ── News Or — très réactif (45min/90min) ──────────────────────────────
     NEWS_CRITIQUES: List[str] = field(default_factory=lambda: [
         "Non-Farm Payrolls",
         "Fed Interest Rate Decision",
@@ -58,14 +72,16 @@ class ConfigXAUUSD(ConfigBase):
         "Fed Chair Speech",
         "Jackson Hole",
     ])
-    NEWS_BLOCK_AVANT_MIN: int = 45    # 45min avant pour l'Or
-    NEWS_BLOCK_APRES_MIN: int = 90    # 90min après pour l'Or
+    NEWS_BLOCK_AVANT_MIN: int = 45
+    NEWS_BLOCK_APRES_MIN: int = 90
 
-    # ── Paramètres Asian Session (pour le Daily Bias uniquement) ──────────
-    ASIAN_SESSION_ENABLED: bool = True
-    EQUAL_HIGH_LOW_TOLERANCE_PCT: float = 0.05
-    BSL_SSL_POOL_MIN_TOUCHES: int = 3
+    # ── Précision prix Or ─────────────────────────────────────────────────
+    PRICE_DIGITS: int = 2
 
-    # ── Magic number unique par actif ──────────────────────────────────────
+    # ── Magic number unique ────────────────────────────────────────────────
     MAGIC_NUMBER: int = 20250101
     ADDON_MAGIC_NUMBER: int = 20250102
+
+
+# Alias — maintenu pour compatibilité avec les modules existants
+ConfigXAUUSD = XAUUSDScalpConfig

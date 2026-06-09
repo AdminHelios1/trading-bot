@@ -1,68 +1,76 @@
 """
-configs/config_wti.py — Configuration spécifique WTI (Pétrole XTIUSD).
+configs/config_wti.py — Configuration scalping WTI (Pétrole XTIUSD).
 
-Setup : SMC + Liquidity Sweep.
-Sessions : Asiatique partielle (02h–06h) + London + New York.
-En session asiatique : paramètres plus stricts (risque réduit, OB min 75).
+Timeframes : M5 signal, M15 confirm, H1 contexte.
+Sessions : Asie partielle 02h–05h30 + London 07h15–12h30 + NY 13h45–19h30 UTC.
+Confirmation Liquidity Sweep optionnelle.
+En session asiatique : risque réduit + ADX minimum plus élevé.
 """
 
 from dataclasses import dataclass, field
 from typing import List
 
-from configs.config_base import ConfigBase, _MT5_H4, _MT5_H1, _MT5_M15, _MT5_M5
+from configs.config_base import ScalpingBaseConfig, _MT5_M5, _MT5_M15, _MT5_H1
 
 
 @dataclass
-class ConfigWTI(ConfigBase):
-    """Configuration complète pour le trading du Pétrole WTI (XTIUSD)."""
+class WTIScalpConfig(ScalpingBaseConfig):
+    """Configuration scalping complète pour le Pétrole WTI (XTIUSD)."""
 
     # ── Identification ────────────────────────────────────────────────────
     SYMBOLE: str = "XTIUSD"
-    NOM_AFFICHAGE: str = "Pétrole WTI (XTIUSD)"
-    TYPE_STRATEGIE: str = "SMC_LIQUIDITY_SWEEP"
+    NOM_AFFICHAGE: str = "Pétrole WTI Scalping (XTIUSD)"
+    TYPE_STRATEGIE: str = "SCALPING_HYBRID_SWEEP"
 
-    # ── Timeframes ────────────────────────────────────────────────────────
-    TIMEFRAME_HTF: int = _MT5_H4
-    TIMEFRAME_MTF: int = _MT5_H1
-    TIMEFRAME_LTF: int = _MT5_M15
-    TIMEFRAME_ENTREE: int = _MT5_M5
+    # ── Timeframes WTI ────────────────────────────────────────────────────
+    TIMEFRAME_SIGNAL: int = _MT5_M5
+    TIMEFRAME_CONFIRM: int = _MT5_M15
+    TIMEFRAME_HTF: int = _MT5_H1
+    LOOP_INTERVAL_SEC: int = 10
 
-    # ── Sessions — incluant session asiatique partielle ────────────────────
+    # ── Sessions — 3 sessions dont asiatique partielle ─────────────────────
     SESSIONS: List[dict] = field(default_factory=lambda: [
-        {"name": "Asian_Partial", "open": 2,  "close": 6},
-        {"name": "London",        "open": 7,  "close": 13},
-        {"name": "New_York",      "open": 13, "close": 20},
+        {
+            "name": "Asia_WTI",
+            "open": 2, "minute_open": 0,
+            "close": 5, "minute_close": 30,
+        },
+        {
+            "name": "London_WTI",
+            "open": 7, "minute_open": 15,
+            "close": 12, "minute_close": 30,
+        },
+        {
+            "name": "NY_WTI",
+            "open": 13, "minute_open": 45,
+            "close": 19, "minute_close": 30,
+        },
     ])
 
-    # ── Session asiatique WTI ──────────────────────────────────────────────
+    # ── Session asiatique — paramètres renforcés ───────────────────────────
     ASIAN_SESSION_ENABLED: bool = True
-    ASIAN_SESSION_DEBUT: int = 2    # 02h00 UTC — ouverture marchés chinois
-    ASIAN_SESSION_FIN: int = 6      # 06h00 UTC
+    ASIAN_SESSION_DEBUT: int = 2
+    ASIAN_SESSION_FIN: int = 6           # 06h UTC (englobant jusqu'après la fin)
+    ASIAN_RISK_MULTIPLIER: float = 0.5   # 0.25% la nuit (0.5 × 0.5%)
+    ASIAN_OB_SCORE_MIN: int = 0
+    ASIAN_ADX_MIN: float = 25.0          # Plus strict la nuit
+    ASIAN_SPREAD_CAP: float = 25.0       # Spread plus tolérant la nuit
 
-    # Paramètres plus stricts en session asiatique
-    ASIAN_RISK_MULTIPLIER: float = 0.5      # Risque → 0.5% (au lieu de 1%)
-    ASIAN_OB_SCORE_MIN: int = 75            # OB score minimum plus élevé la nuit
-    ASIAN_SPREAD_HARD_CAP_POINTS: float = 30.0  # Spread plus tolérant la nuit
+    # ── Confirmation Liquidity Sweep (optionnel) ───────────────────────────
+    USE_SWEEP_CONFIRMATION: bool = True
+    SWEEP_MIN_WICK_ATR: float = 0.6      # Mèche min = 0.6× ATR
+    SWEEP_MAX_BODY_RATIO: float = 0.45   # Corps max 45% du range
+    SWEEP_LOOKBACK_CANDLES: int = 20
 
-    # ── Spread ────────────────────────────────────────────────────────────
-    SPREAD_HARD_CAP_POINTS: float = 20.0
+    # ── Spread WTI ────────────────────────────────────────────────────────
+    SPREAD_HARD_CAP_POINTS: float = 15.0
     SPREAD_DYNAMIC_MULTIPLIER: float = 2.0
 
-    # ── Displacement ──────────────────────────────────────────────────────
-    DISPLACEMENT_MIN_BODY_ATR_RATIO: float = 1.4
-    DISPLACEMENT_MIN_BODY_RANGE_PCT: float = 58.0
+    # ── SL/TP WTI ─────────────────────────────────────────────────────────
+    SL_ATR_MULT: float = 1.5
+    RR_TP: float = 2.0
 
-    # ── Setup flags ────────────────────────────────────────────────────────
-    KILLZONES_ENABLED: bool = False
-    FVG_PRIORITY: bool = False
-    LIQUIDITY_SWEEP_ENABLED: bool = True
-
-    # ── Paramètres Liquidity Sweep ────────────────────────────────────────
-    SWEEP_MIN_WICK_ATR_RATIO: float = 0.8   # Mèche min = 0.8× ATR
-    SWEEP_MAX_BODY_RATIO: float = 0.40      # Corps max 40% du range
-    SWEEP_LOOKBACK_CANDLES: int = 30        # Chercher niveaux sur 30 bougies H1
-
-    # ── News critiques WTI ────────────────────────────────────────────────
+    # ── News WTI — EIA pétrole critique ───────────────────────────────────
     NEWS_CRITIQUES: List[str] = field(default_factory=lambda: [
         "EIA Crude Oil Inventories",
         "API Weekly Crude Oil Stock",
@@ -71,16 +79,15 @@ class ConfigWTI(ConfigBase):
         "Fed Interest Rate Decision",
     ])
     NEWS_BLOCK_AVANT_MIN: int = 30
-    NEWS_BLOCK_APRES_MIN: int = 45    # WTI se stabilise plus vite que l'Or
+    NEWS_BLOCK_APRES_MIN: int = 45
 
-    # ── Données économiques chinoises (impact sur la demande de pétrole) ──
-    EVENTS_CHINE: List[str] = field(default_factory=lambda: [
-        "China Manufacturing PMI",
-        "China Industrial Production",
-        "China GDP",
-    ])
-    BLOQUER_EVENTS_CHINE: bool = True
+    # ── Précision prix WTI ────────────────────────────────────────────────
+    PRICE_DIGITS: int = 2
 
-    # ── Magic number unique par actif ──────────────────────────────────────
+    # ── Magic number ──────────────────────────────────────────────────────
     MAGIC_NUMBER: int = 20250401
     ADDON_MAGIC_NUMBER: int = 20250402
+
+
+# Alias — maintenu pour compatibilité
+ConfigWTI = WTIScalpConfig

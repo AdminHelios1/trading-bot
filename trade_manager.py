@@ -594,6 +594,79 @@ class GestionnairePositions:
         except Exception:
             return 5.0
 
+    # ── Méthodes scalping ────────────────────────────────────────────────
+
+    def _verifier_bougie_adverse_scalping(
+        self,
+        trade: "TradeGere",
+        indicateurs: dict,
+    ) -> bool:
+        """
+        Sortie anticipée scalping si une bougie adverse forte apparaît.
+        LONG : engulfing baissier + clôture dans le tiers inférieur → sortir.
+        SHORT : engulfing haussier + clôture dans le tiers supérieur → sortir.
+
+        Args:
+            trade       : Trade en cours.
+            indicateurs : Dict d'indicateurs calculés (depuis ScalpingStrategy).
+
+        Returns:
+            True si la bougie adverse justifie une sortie immédiate.
+        """
+        if not indicateurs:
+            return False
+
+        if trade.direction == DirectionTrade.LONG:
+            adverse = (
+                indicateurs.get("bear_engulf", False) and
+                indicateurs.get("close_pos_pct", 50) <= 35
+            )
+        else:
+            adverse = (
+                indicateurs.get("bull_engulf", False) and
+                indicateurs.get("close_pos_pct", 50) >= 65
+            )
+
+        if adverse:
+            logger.warning(
+                f"[SCALP] Bougie adverse détectée — sortie anticipée "
+                f"[{trade.id_trade}] @ {indicateurs.get('close', 0):.2f}"
+            )
+        return adverse
+
+    def _verifier_duree_max_scalping(
+        self,
+        trade: "TradeGere",
+        max_bars: int = 20,
+        tf_minutes: int = 5,
+    ) -> bool:
+        """
+        Ferme le trade si la durée maximale est dépassée en scalping.
+        En scalping, un trade qui n'a pas atteint SL/TP après N bougies
+        doit être fermé pour libérer l'exposition.
+
+        Args:
+            trade      : Trade en cours.
+            max_bars   : Nombre maximum de bougies signal avant fermeture.
+            tf_minutes : Durée d'une bougie signal en minutes.
+
+        Returns:
+            True si la durée max est dépassée → fermer.
+        """
+        if trade.heure_entree is None:
+            return False
+
+        duree_max_sec = max_bars * tf_minutes * 60
+        ecoule = (datetime.utcnow() - trade.heure_entree).total_seconds()
+
+        if ecoule >= duree_max_sec:
+            logger.info(
+                f"[SCALP] Durée max atteinte ({int(ecoule / 60)}min / "
+                f"{max_bars} bougies) — fermeture [{trade.id_trade}]"
+            )
+            return True
+        return False
+
     def _get_prix_actuel(self, symbole: str, direction: DirectionTrade) -> float:
         """Prix courant bid (LONG) ou ask (SHORT)."""
         if self.connecteur is None:

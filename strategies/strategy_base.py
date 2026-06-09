@@ -35,6 +35,9 @@ class SignalResult:
     risk_multiplier: float = 1.0    # Multiplicateur de risque (CB, earnings...)
     ob: Optional[object] = None     # OBMultiTimeframe ou None
     atr_m15: float = 0.0
+    # Niveaux SL/TP calculés par la stratégie (scalping)
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
 
     @property
     def valide(self) -> bool:

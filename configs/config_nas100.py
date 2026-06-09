@@ -1,65 +1,80 @@
 """
-configs/config_nas100.py — Configuration spécifique NAS100 (NASDAQ 100).
+configs/config_nas100.py — Configuration scalping NAS100 (NASDAQ 100).
 
-Setup : SMC Order Block + Killzones ICT.
-Sessions : NY uniquement (indice américain) avec fenêtres Killzone précises.
+Timeframes : M1 signal, M5 confirm, M15 contexte.
+Sessions : Killzones ICT NY uniquement (NY Open 13h30–15h30, Power 15h30–17h).
+EMAs : 8/13/34 (plus réactives sur M1).
 """
 
 from dataclasses import dataclass, field
 from typing import List
 
-from configs.config_base import ConfigBase, _MT5_H4, _MT5_H1, _MT5_M15, _MT5_M5
+from configs.config_base import ScalpingBaseConfig, _MT5_M1, _MT5_M5, _MT5_M15
 
 
 @dataclass
-class ConfigNAS100(ConfigBase):
-    """Configuration complète pour le trading du NASDAQ 100 (NAS100)."""
+class NAS100ScalpConfig(ScalpingBaseConfig):
+    """Configuration scalping complète pour le NASDAQ 100 (NAS100)."""
 
     # ── Identification ────────────────────────────────────────────────────
     SYMBOLE: str = "NAS100"
-    NOM_AFFICHAGE: str = "NASDAQ 100 (NAS100)"
-    TYPE_STRATEGIE: str = "SMC_KILLZONES_ICT"
+    NOM_AFFICHAGE: str = "NASDAQ Scalping (NAS100)"
+    TYPE_STRATEGIE: str = "SCALPING_HYBRID"
 
-    # ── Timeframes ────────────────────────────────────────────────────────
-    TIMEFRAME_HTF: int = _MT5_H4
-    TIMEFRAME_MTF: int = _MT5_H1
-    TIMEFRAME_LTF: int = _MT5_M15
-    TIMEFRAME_ENTREE: int = _MT5_M5
+    # ── Timeframes M1 — NASDAQ très liquide ───────────────────────────────
+    TIMEFRAME_SIGNAL: int = _MT5_M1
+    TIMEFRAME_CONFIRM: int = _MT5_M5
+    TIMEFRAME_HTF: int = _MT5_M15
+    LOOP_INTERVAL_SEC: int = 5           # Boucle toutes les 5s sur M1
 
-    # ── Sessions — NY uniquement (indice américain) ────────────────────────
-    SESSIONS: List[dict] = field(default_factory=lambda: [
-        {"name": "Pre_Market", "open": 13, "close": 14},
-        {"name": "New_York",   "open": 14, "close": 21},
-    ])
-
-    # ── Killzones ICT — fenêtres haute probabilité ────────────────────────
+    # ── Killzones ICT — fenêtres haute probabilité uniquement ─────────────
     KILLZONES_ENABLED: bool = True
-    KILLZONES: List[dict] = field(default_factory=lambda: [
+    SESSIONS: List[dict] = field(default_factory=lambda: [
         {
             "name": "NY_Open_KZ",
             "open": 13, "minute_open": 30,
-            "close": 16, "minute_close": 0,
+            "close": 15, "minute_close": 30,
         },
         {
-            "name": "NY_Lunch_KZ",
-            "open": 16, "minute_open": 0,
+            "name": "NY_Power_KZ",
+            "open": 15, "minute_open": 30,
             "close": 17, "minute_close": 0,
         },
     ])
 
-    # ── Spread — NAS100 naturellement plus large que l'Or ─────────────────
-    SPREAD_HARD_CAP_POINTS: float = 15.0
+    # ── Spread NASDAQ ─────────────────────────────────────────────────────
+    SPREAD_HARD_CAP_POINTS: float = 12.0
     SPREAD_DYNAMIC_MULTIPLIER: float = 2.0
 
-    # ── Displacement — légèrement moins strict sur les indices ─────────────
-    DISPLACEMENT_MIN_BODY_ATR_RATIO: float = 1.3
-    DISPLACEMENT_MIN_BODY_RANGE_PCT: float = 55.0
+    # ── EMAs plus réactives sur M1 (8/13/34 au lieu de 9/21/50) ──────────
+    EMA_FAST: int = 8
+    EMA_SLOW: int = 13
+    EMA_TREND: int = 34
+    HTF_EMA_LEN: int = 21
+    EMA_MIN_SPREAD_PCT: float = 0.08    # Légèrement plus souple sur M1
 
-    # ── Setup flags ────────────────────────────────────────────────────────
-    FVG_PRIORITY: bool = False
-    LIQUIDITY_SWEEP_ENABLED: bool = False
+    # ── RSI M1 — plus de bruit, plages plus larges ────────────────────────
+    RSI_BULL_MIN: int = 40
+    RSI_BULL_MAX: int = 70
+    RSI_BEAR_MIN: int = 30
+    RSI_BEAR_MAX: int = 60
 
-    # ── News critiques NAS100 ─────────────────────────────────────────────
+    # ── ADX — tendances plus courtes sur M1 ───────────────────────────────
+    ADX_MIN: float = 15.0
+
+    # ── SL plus serré sur M1 ──────────────────────────────────────────────
+    SL_ATR_MULT: float = 1.2
+    RR_TP: float = 1.8
+
+    # ── Risk réduit pendant earnings ──────────────────────────────────────
+    RISQUE_PAR_TRADE_PCT: float = 0.5
+    REDUCE_RISK_EARNINGS: bool = True
+    EARNINGS_RISK_PCT: float = 0.25
+    EARNINGS_SEASON_MONTHS: List[int] = field(
+        default_factory=lambda: [1, 4, 7, 10]
+    )
+
+    # ── News NASDAQ ───────────────────────────────────────────────────────
     NEWS_CRITIQUES: List[str] = field(default_factory=lambda: [
         "Fed Interest Rate Decision",
         "Non-Farm Payrolls",
@@ -67,19 +82,22 @@ class ConfigNAS100(ConfigBase):
         "GDP q/q",
     ])
     NEWS_BLOCK_AVANT_MIN: int = 30
-    NEWS_BLOCK_APRES_MIN: int = 60
+    NEWS_BLOCK_APRES_MIN: int = 45
 
-    # ── Paramètres spécifiques NAS100 ─────────────────────────────────────
-    # Saisons de résultats trimestriels (mois) — risque réduit
-    EARNINGS_SEASON_MONTHS: List[int] = field(
-        default_factory=lambda: [1, 4, 7, 10]
-    )
-    REDUCE_RISK_EARNINGS: bool = True    # Risque → 0.5% pendant earnings
-
-    # Corrélation avec SP500 — NAS100 et SP500 ne peuvent pas être ouverts ensemble
-    SYMBOLES_CORRELES: List[str] = field(default_factory=lambda: ["US500"])
+    # ── Corrélation SP500 ─────────────────────────────────────────────────
+    SYMBOLES_CORRELES: List[str] = field(default_factory=lambda: ["US500", "SP500"])
     COEFFICIENT_CORRELATION: float = 0.95
 
-    # ── Magic number unique par actif ──────────────────────────────────────
+    # ── Précision prix NASDAQ ─────────────────────────────────────────────
+    PRICE_DIGITS: int = 1
+
+    # ── Magic number ──────────────────────────────────────────────────────
     MAGIC_NUMBER: int = 20250201
     ADDON_MAGIC_NUMBER: int = 20250202
+
+    # ── Durée max plus courte sur M1 ──────────────────────────────────────
+    MAX_TRADE_DURATION_BARS: int = 30   # M1 → 30 bougies = 30 minutes max
+
+
+# Alias — maintenu pour compatibilité
+ConfigNAS100 = NAS100ScalpConfig

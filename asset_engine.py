@@ -152,8 +152,26 @@ class MoteurActif:
         }
 
         try:
-            if type_strategie == "SMC_BREAKER_BLOCK":
-                # Réutilise la stratégie XAUUSD existante (adaptée)
+            # ── Stratégies scalping (nouvelles) ───────────────────────────
+            if type_strategie in ("SCALPING_HYBRID", "SCALPING_HYBRID_FVG",
+                                   "SCALPING_HYBRID_SWEEP"):
+                symbole = getattr(self.config, "SYMBOLE", "XAUUSD")
+                if symbole == "NAS100":
+                    from strategies.strategy_nas100 import StrategieNAS100
+                    return StrategieNAS100(**kwargs_communs)
+                elif symbole == "US500":
+                    from strategies.strategy_sp500 import StrategieSP500
+                    return StrategieSP500(**kwargs_communs)
+                elif symbole == "XTIUSD":
+                    from strategies.strategy_wti import StrategieWTI
+                    return StrategieWTI(**kwargs_communs)
+                else:
+                    # XAUUSD et autres → stratégie scalping de base
+                    from strategies.strategy_scalping_base import ScalpingStrategy
+                    return ScalpingStrategy(**kwargs_communs)
+
+            # ── Stratégies SMC héritées (compatibilité) ───────────────────
+            elif type_strategie == "SMC_BREAKER_BLOCK":
                 from strategy import StrategieSMC
                 return StrategieSMC(
                     filtre_news=self._news_filter,

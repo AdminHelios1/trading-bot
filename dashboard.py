@@ -101,6 +101,17 @@ class Dashboard:
             "news_prochaine": "—",
             "news_derniere_maj": "—",
             "news_calendar_frais": True,
+            # Scalping — indicateurs temps réel par actif
+            "scalping_actif": False,
+            "scalping_moteurs": {},   # {symbole: {adx, rsi, ema_spread, tendance, statut}}
+            # Portefeuille multi-actif
+            "portfolio_actif": False,
+            "portfolio_exposition_pct": 0.0,
+            "portfolio_budget_dispo_pct": 5.0,
+            "portfolio_dd_global_pct": 0.0,
+            "portfolio_par_symbole": {},
+            "portfolio_paires_correlees": [],
+            "portfolio_moteurs": {},  # {symbole: {"statut", "setup", "position", "raison"}}
             # Simulation paper trading (slippage)
             "paper_sim_actif": False,
             "paper_sim_nb_executions": 0,
@@ -708,6 +719,177 @@ class Dashboard:
 
         return Panel(table, title="🌅 DAILY BIAS XAUUSD", border_style=couleur_bord)
 
+    def _construire_panel_scalping(self) -> Panel:
+        """Panneau indicateurs scalping temps réel par actif."""
+        e = self._etat
+
+        if not e.get("scalping_actif", False):
+            return Panel(
+                Text("Mode mono-actif — scalping inactif", style="dim italic"),
+                title="⚡ SCALPING MULTI-ACTIF",
+                border_style="dim",
+            )
+
+        table = Table(box=None, show_header=True, header_style="bold cyan", padding=(0, 1))
+        table.add_column("Actif", width=12)
+        table.add_column("TF", width=5)
+        table.add_column("ADX", width=7)
+        table.add_column("RSI", width=7)
+        table.add_column("EMA", width=8)
+        table.add_column("Statut", width=30)
+
+        moteurs = e.get("scalping_moteurs", {})
+        EMOJIS = {"XAUUSD": "🥇", "NAS100": "💻", "US500": "📈", "XTIUSD": "🛢️"}
+
+        for symbole, infos in moteurs.items():
+            emoji = EMOJIS.get(symbole, "📊")
+            tf    = infos.get("tf", "M5")
+            adx   = infos.get("adx", 0.0)
+            rsi   = infos.get("rsi", 50.0)
+            ema_sp = infos.get("ema_spread", 0.0)
+            statut = infos.get("statut", "—")
+            position = infos.get("position", False)
+
+            # Couleur ADX
+            if adx >= 25:
+                couleur_adx = "green"
+                adx_str = f"✅ {adx:.0f}"
+            elif adx >= 20:
+                couleur_adx = "yellow"
+                adx_str = f"⚠️ {adx:.0f}"
+            else:
+                couleur_adx = "red"
+                adx_str = f"⏸ {adx:.0f}"
+
+            # Couleur RSI
+            if 45 <= rsi <= 68 or 32 <= rsi <= 55:
+                couleur_rsi = "green"
+            elif rsi > 70 or rsi < 30:
+                couleur_rsi = "red"
+            else:
+                couleur_rsi = "yellow"
+
+            # EMA spread
+            ema_str = f"{ema_sp:.2f}%" if ema_sp > 0 else "—"
+
+            # Statut
+            if position:
+                couleur_statut = "bold green"
+            elif "LONG" in statut or "SHORT" in statut:
+                couleur_statut = "bold green"
+            elif "session" in statut.lower() or "hors" in statut.lower():
+                couleur_statut = "dim"
+            else:
+                couleur_statut = "cyan"
+
+            table.add_row(
+                f"{emoji} {symbole}",
+                tf,
+                Text(adx_str, style=couleur_adx),
+                Text(f"{rsi:.0f}", style=couleur_rsi),
+                Text(ema_str, style="cyan"),
+                Text(statut[:28], style=couleur_statut),
+            )
+
+        return Panel(
+            table,
+            title="⚡ SCALPING MULTI-ACTIF (EMA+RSI+ADX)",
+            border_style="cyan",
+        )
+
+    def _construire_panel_portfolio_multi_actif(self) -> Panel:
+        """Panneau supervision multi-actif (affiché si portfolio_actif=True)."""
+        e = self._etat
+
+        if not e.get("portfolio_actif", False):
+            return Panel(
+                Text("Mode mono-actif", style="dim italic"),
+                title="🌐 PORTEFEUILLE MULTI-ACTIF",
+                border_style="dim",
+            )
+
+        table = Table(box=None, show_header=False, padding=(0, 1))
+        table.add_column("Clé", style="dim", width=20)
+        table.add_column("Valeur", width=37)
+
+        # ── Exposition globale ──────────────────────────────────────────
+        expo = e.get("portfolio_exposition_pct", 0.0)
+        budget = e.get("portfolio_budget_dispo_pct", 5.0)
+        dd_global = e.get("portfolio_dd_global_pct", 0.0)
+
+        # Barre de progression exposition
+        barres = int(expo / 5.0 * 10)
+        barre_str = "█" * barres + "░" * (10 - barres)
+        couleur_expo = "green" if expo < 3.0 else "yellow" if expo < 4.5 else "red"
+
+        table.add_row(
+            "Exposition totale",
+            Text(
+                f"{expo:.2f}% / 5.0%  {barre_str}",
+                style=f"bold {couleur_expo}"
+            )
+        )
+        table.add_row(
+            "Budget disponible",
+            Text(f"{budget:.2f}% (${budget/100*10000:.0f})", style="cyan")
+        )
+
+        dd_color = "green" if dd_global < 2.0 else "yellow" if dd_global < 4.0 else "red"
+        table.add_row(
+            "DD global jour",
+            Text(f"{dd_global:.2f}%  {'✅' if dd_global < 3.0 else '⚠️'}", style=dd_color)
+        )
+
+        # ── Corrélations actives ────────────────────────────────────────
+        paires = e.get("portfolio_paires_correlees", [])
+        if paires:
+            table.add_row(
+                "Corrélations",
+                Text(f"⚠️ {', '.join(paires)}", style="yellow")
+            )
+        else:
+            table.add_row("Corrélations", Text("✅ Aucune dangereuse", style="green"))
+
+        # ── Status par actif ────────────────────────────────────────────
+        moteurs = e.get("portfolio_moteurs", {})
+        EMOJIS_ACTIF = {
+            "XAUUSD": "🥇", "NAS100": "💻", "SP500": "📈", "WTI": "🛢️",
+            "US500": "📈", "XTIUSD": "🛢️",
+        }
+
+        for symbole, infos in moteurs.items():
+            emoji = EMOJIS_ACTIF.get(symbole, "📊")
+            setup = infos.get("setup", "?")
+            statut = infos.get("statut", "—")
+            position = infos.get("position", False)
+            raison = infos.get("raison", "")
+
+            if position:
+                couleur_statut = "bold green"
+                indicateur = "🟢"
+            elif "BLOQUÉ" in statut.upper() or "CORREL" in statut.upper():
+                couleur_statut = "red"
+                indicateur = "🔴"
+            else:
+                couleur_statut = "dim"
+                indicateur = "⏳"
+
+            valeur_str = f"{indicateur} {statut[:35]}"
+            if raison and not position:
+                valeur_str += f"\n     └ {raison[:33]}"
+
+            table.add_row(
+                f"{emoji} {symbole}",
+                Text(valeur_str, style=couleur_statut)
+            )
+
+        couleur_bord = "red" if dd_global >= 4.0 else "green" if expo < 3.0 else "yellow"
+        return Panel(
+            table,
+            title="🌐 PORTEFEUILLE MULTI-ACTIF",
+            border_style=couleur_bord,
+        )
+
     def _construire_panel_paper_simulation(self) -> Panel:
         """Panneau simulation paper trading (slippage réaliste). Mode paper uniquement."""
         e = self._etat
@@ -993,6 +1175,10 @@ class Dashboard:
         )
         layout.add_row(
             self._construire_panel_paper_simulation(),
+            self._construire_panel_scalping(),
+        )
+        layout.add_row(
+            self._construire_panel_portfolio_multi_actif(),
             Text(""),
         )
 
