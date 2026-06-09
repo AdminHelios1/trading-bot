@@ -17,8 +17,8 @@ class NAS100ScalpConfig(ScalpingBaseConfig):
     """Configuration scalping complète pour le NASDAQ 100 (NAS100)."""
 
     # ── Identification ────────────────────────────────────────────────────
-    SYMBOLE: str = "NAS100"
-    NOM_AFFICHAGE: str = "NASDAQ Scalping (NAS100)"
+    SYMBOLE: str = "ND100m"
+    NOM_AFFICHAGE: str = "NASDAQ Scalping (ND100m)"
     TYPE_STRATEGIE: str = "SCALPING_HYBRID"
 
     # ── Timeframes M1 — NASDAQ très liquide ───────────────────────────────
