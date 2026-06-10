@@ -332,7 +332,6 @@ class ScalpingStrategy(StrategieBase):
         vol_bull = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         long_ok = (
-            trigger_bull and
             tendance_bull and
             htf_bull and
             ind["adx"] > adx_min and
@@ -350,7 +349,6 @@ class ScalpingStrategy(StrategieBase):
         vol_bear = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         short_ok = (
-            trigger_bear and
             tendance_bear and
             htf_bear and
             ind["adx"] > adx_min and
