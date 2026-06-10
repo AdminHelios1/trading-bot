@@ -65,14 +65,17 @@ class FiltreSpread:
         self,
         moniteur: MoniteurSpread,
         connecteur=None,
+        symbole: str = None,
     ) -> None:
         """
         Args:
             moniteur: Instance MoniteurSpread injectée.
             connecteur: Instance ConnecteurMT5 (peut être None en mode test).
+            symbole: Symbole MT5 de l'actif (défaut: CONFIG.SYMBOLE).
         """
         self.moniteur = moniteur
         self.connecteur = connecteur
+        self.symbole = symbole or CONFIG.SYMBOLE
 
     # ── Interface principale ───────────────────────────────────────────────
 
@@ -267,7 +270,7 @@ class FiltreSpread:
                 return True, "OK"
 
             df_h4 = self.connecteur.get_ohlcv(
-                CONFIG.SYMBOLE,
+                self.symbole,
                 CONFIG.TIMEFRAME_HTF,
                 64,  # 50 bougies + 14 pour ATR
             )

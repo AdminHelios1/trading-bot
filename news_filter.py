@@ -132,9 +132,10 @@ class FiltreNews:
             # Charger si nécessaire
             self.charger_si_necessaire()
 
-            # Si aucun événement chargé → bloquer par sécurité
+            # Si aucun événement chargé → autoriser (fail-open, ne pas bloquer le bot)
             if not self._evenements:
-                return False, "Calendrier news indisponible — trading bloqué par sécurité"
+                logger.warning("Calendrier news vide — filtre désactivé, trading autorisé")
+                return True, "Calendrier news vide — filtre désactivé"
 
             # Vérifier les événements dans une fenêtre de ±4h
             evenements_proches = self._get_evenements_proches(check_time, fenetre_heures=4)

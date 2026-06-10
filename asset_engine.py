@@ -78,7 +78,8 @@ class MoteurActif:
             from spread_filter import FiltreSpread
             moniteur = MoniteurSpread(connecteur=self.connecteur)
             self._spread_filter = FiltreSpread(
-                moniteur=moniteur, connecteur=self.connecteur
+                moniteur=moniteur, connecteur=self.connecteur,
+                symbole=self.symbole,
             )
         except Exception as e:
             logger.debug(f"[{self.symbole}] SpreadFilter non disponible : {e}")
