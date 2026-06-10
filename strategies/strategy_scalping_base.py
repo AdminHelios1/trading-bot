@@ -160,6 +160,16 @@ class ScalpingStrategy(StrategieBase):
             low_wick <= c_range * 0.20
         )
 
+        # Bougie forte directionnelle (body ≥ 60% du range)
+        strong_bull_bar = (
+            float(c["close"]) > float(c["open"]) and
+            body_sz >= c_range * 0.60
+        )
+        strong_bear_bar = (
+            float(c["close"]) < float(c["open"]) and
+            body_sz >= c_range * 0.60
+        )
+
         # Position de clôture dans le range (0-100%)
         close_pos_pct = (float(c["close"]) - float(c["low"])) / c_range * 100
 
@@ -214,6 +224,8 @@ class ScalpingStrategy(StrategieBase):
             "bear_engulf":     bear_engulf,
             "bull_pin":        bull_pin,
             "bear_pin":        bear_pin,
+            "strong_bull_bar": strong_bull_bar,
+            "strong_bear_bar": strong_bear_bar,
             "close_pos_pct":   close_pos_pct,
             "ema_spread_pct":  ema_spread_pct,
             "bounce_bull":     bounce_bull,
@@ -326,7 +338,7 @@ class ScalpingStrategy(StrategieBase):
         tendance_bull  = (ind["ema_fast"] > ind["ema_slow"] and
                           ind["close"] > ind["ema_trend"])
         trigger_bull   = ind["bounce_bull"] or ind["cross_up"]
-        pa_bull        = (ind["bull_engulf"] or ind["bull_pin"]) and ind["close_pos_pct"] >= 55
+        pa_bull        = (ind["bull_engulf"] or ind["bull_pin"] or ind["strong_bull_bar"]) and ind["close_pos_pct"] >= 50
         # Filtre volume — ignoré si vol_avg ~= 1.0 (démo / tick_volume non fiable)
         vol_avg_fiable = ind["vol_avg"] > 1.0
         vol_bull = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
@@ -345,7 +357,7 @@ class ScalpingStrategy(StrategieBase):
         tendance_bear  = (ind["ema_fast"] < ind["ema_slow"] and
                           ind["close"] < ind["ema_trend"])
         trigger_bear   = ind["bounce_bear"] or ind["cross_down"]
-        pa_bear        = (ind["bear_engulf"] or ind["bear_pin"]) and ind["close_pos_pct"] <= 45
+        pa_bear        = (ind["bear_engulf"] or ind["bear_pin"] or ind["strong_bear_bar"]) and ind["close_pos_pct"] <= 50
         vol_bear = (not vol_avg_fiable) or (ind["volume"] > ind["vol_avg"] * vol_mult)
 
         short_ok = (
